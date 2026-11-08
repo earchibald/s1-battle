@@ -18,6 +18,7 @@ export class SoundEngine {
   private crowdSwell!: GainNode;
   private noiseBuf!: AudioBuffer;
   private sawVoices = new Map<string, { osc: OscillatorNode; osc2: OscillatorNode; gain: GainNode; filter: BiquadFilterNode }>();
+  private motors = new Map<string, { osc: OscillatorNode; gain: GainNode }>();
   private grind: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
   private alarm: { osc: OscillatorNode; gain: GainNode; lfo: OscillatorNode } | null = null;
   muted = false;
@@ -178,12 +179,12 @@ export class SoundEngine {
     let v = this.sawVoices.get(id);
     if (!v) {
       const osc = ctx.createOscillator();
-      osc.type = "sawtooth";
+      osc.type = "triangle";
       const osc2 = ctx.createOscillator();
-      osc2.type = "square";
+      osc2.type = "sine";
       const filter = ctx.createBiquadFilter();
       filter.type = "lowpass";
-      filter.Q.value = 3;
+      filter.Q.value = 1.2;
       const gain = ctx.createGain();
       gain.gain.value = 0;
       const mix = ctx.createGain();
@@ -197,12 +198,36 @@ export class SoundEngine {
       this.sawVoices.set(id, v);
     }
     const t = ctx.currentTime;
-    const f = 90 + spin * spin * 520;
+    // Low, mellow hum that rises with spin; it only gets loud for the moment the blade is in something.
+    const f = 70 + spin * spin * 260;
     v.osc.frequency.setTargetAtTime(f, t, 0.08);
-    v.osc2.frequency.setTargetAtTime(f * 0.5 + 1.5, t, 0.08);
-    v.filter.frequency.setTargetAtTime(400 + spin * 2600 + (biting ? 1500 : 0), t, 0.05);
-    const level = alive ? 0.02 + spin * 0.08 + (biting ? 0.06 : 0) : 0;
+    v.osc2.frequency.setTargetAtTime(f * 2 + 1.5, t, 0.08);
+    v.filter.frequency.setTargetAtTime(220 + spin * 700 + (biting ? 1800 : 0), t, 0.05);
+    const level = alive ? 0.004 + spin * 0.018 + (biting ? 0.05 : 0) : 0;
     v.gain.gain.setTargetAtTime(level, t, 0.06);
+  }
+
+  /** Per-bot drive motor: a quiet low hum whose pitch and level follow how hard the bot is driving. */
+  updateMotor(id: string, drive: number, alive: boolean, pitch: number) {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    let m = this.motors.get(id);
+    if (!m) {
+      const osc = ctx.createOscillator();
+      osc.type = "triangle";
+      const lp = ctx.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.frequency.value = 320;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      osc.connect(lp).connect(gain).connect(this.sfx);
+      osc.start();
+      m = { osc, gain };
+      this.motors.set(id, m);
+    }
+    const t = ctx.currentTime;
+    m.osc.frequency.setTargetAtTime(pitch * (0.8 + drive * 1.1), t, 0.12);
+    m.gain.gain.setTargetAtTime(alive ? 0.002 + drive * 0.022 : 0, t, 0.12);
   }
 
   /** Kill saws: grind loop level follows how far they're raised. */
@@ -292,10 +317,23 @@ export class SoundEngine {
   }
 
   flip(hit: boolean) {
-    // pneumatic release then the plate hitting its stop
-    this.noise(0.22, { type: "bandpass", freq: 4000, freqEnd: 900, q: 1.5, gain: 0.5 });
-    this.tone(180, 0.18, { type: "triangle", gain: 0.35, freqEnd: 60, delay: 0.03 });
-    if (hit) this.clang(260, 0.35, 0.22);
+    // Pneumatic dump ("PSSHH"), the plate slamming its stop ("THWACK"), and, on a hit, the whoosh of airtime.
+    this.noise(0.32, { type: "bandpass", freq: 5000, freqEnd: 500, q: 1.2, gain: 0.9 });
+    this.tone(170, 0.22, { type: "triangle", gain: 0.6, freqEnd: 45, delay: 0.03 });
+    this.noise(0.08, { freq: 2500, freqEnd: 300, gain: 0.5, attack: 0.001 });
+    if (hit) {
+      this.clang(300, 0.4, 0.35);
+      this.noise(0.75, { type: "bandpass", freq: 350, freqEnd: 2600, q: 1.5, gain: 0.28, attack: 0.08 });
+    }
+  }
+
+  /** One-shot weapon back online: a sharp click and a short hiss. Distinct per kind so ears can track it. */
+  recharged(kind: "hammer" | "grabber" | "flipper") {
+    const f = kind === "hammer" ? 900 : kind === "grabber" ? 1400 : 2100;
+    this.tone(f, 0.05, { type: "square", gain: 0.07 });
+    this.tone(f * 1.5, 0.08, { type: "square", gain: 0.05, delay: 0.05 });
+    if (kind === "flipper") this.noise(0.25, { type: "highpass", freq: 3500, gain: 0.12, attack: 0.02 });
+    if (kind === "hammer") this.noise(0.2, { type: "bandpass", freq: 500, freqEnd: 900, q: 3, gain: 0.1, attack: 0.03 });
   }
 
   landing(force: number, crit = false) {

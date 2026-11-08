@@ -110,7 +110,7 @@ export class ArenaScene {
       [14, 14],
       [-14, 14],
     ].forEach(([x, z], i) => {
-      const s = new THREE.SpotLight(spotColors[i], 60, 60, 0.6, 0.6, 1.2);
+      const s = new THREE.SpotLight(spotColors[i], 28, 60, 0.6, 0.6, 1.2);
       s.position.set(x, 18, z);
       s.target.position.set(0, 0, 0);
       this.scene.add(s, s.target);

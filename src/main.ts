@@ -28,7 +28,7 @@ const scene = new ArenaScene(canvas);
 const effects = new Effects();
 scene.scene.add(effects.group);
 const labels = new Labels(document.getElementById("labels")!, scene.camera);
-const callouts = new Callouts(document.getElementById("callouts")!, scene.camera);
+const callouts = new Callouts(document.getElementById("callouts")!, scene.camera, () => world.bots.filter((b) => b.alive).map((b) => b.p));
 const sound = new SoundEngine();
 // Browsers gate audio behind a gesture; the first click or key anywhere unlocks it.
 const unlock = () => sound.unlock();
@@ -37,6 +37,9 @@ window.addEventListener("keydown", unlock);
 /** Last time each saw bot's blade connected, for the whine's "biting" timbre. */
 const lastBite = new Map<string, number>();
 const lastHammerPhase = new Map<string, HammerPhase>();
+const lastReady = new Map<string, boolean>();
+/** Motor pitch per kind so the four hums don't stack into one drone. */
+const MOTOR_PITCH = { saw: 62, hammer: 44, grabber: 52, flipper: 70 } as const;
 let lastCountdownTick = -1;
 
 let paused = false;
@@ -103,6 +106,7 @@ function startMatch() {
   slowmo = 1;
   lastCountdownTick = -1;
   lastHammerPhase.clear();
+  lastReady.clear();
   hud.hideResult();
 
   // Rotate start corners each match so nobody always spawns next to the pit.
@@ -263,6 +267,13 @@ function handleEvent(e: SimEvent) {
 function updateAudio() {
   const fighting = world.phase === "fighting";
   for (const b of world.bots) {
+    const drive = paused || !fighting ? 0 : Math.min(1, Math.hypot(b.vel.x, b.vel.y) / b.def.stats.maxSpeed) * 0.7 + Math.abs(b.throttle) * 0.3;
+    sound.updateMotor(b.id, b.controllable ? drive : 0, b.alive, MOTOR_PITCH[b.kind]);
+    if (b.kind !== "saw" && fighting) {
+      const prev = lastReady.get(b.id);
+      if (prev === false && b.weaponReady && b.alive) sound.recharged(b.kind);
+      lastReady.set(b.id, b.weaponReady);
+    }
     if (b.kind === "saw") {
       const biting = world.time - (lastBite.get(b.id) ?? -10) < 0.2;
       sound.updateSaw(b.id, paused ? 0 : b.weapon.spin, b.alive && world.phase !== "ended", biting);
