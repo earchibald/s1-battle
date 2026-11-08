@@ -31,6 +31,9 @@ slots that rise every 10 s. Walls hurt at speed, especially when you arrive airb
 Match rules: 4-bot free-for-all, 3-minute cap, last bot standing wins; on time-out the judges score health
 then damage dealt. Matches typically run 40–90 s.
 
+Cost and latency, measured: a match generates ~400–600 Jev decisions (one request each, ~7/s across four
+bots), ~90–100 ms average latency, ~450k input tokens ≈ $0.02 per match at Jev 1.14 pricing.
+
 ## How a decision works
 
 1. `src/sim/perception.ts` builds two views of the moment for a bot: a semantic **Perception** (words and
