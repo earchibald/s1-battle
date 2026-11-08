@@ -83,7 +83,7 @@ export class World {
       return;
     }
     this.fightTime += dt;
-    const ctx: WeaponContext = { bots: this.bots, time: this.fightTime, emit: (e) => this.emit(e) };
+    const ctx: WeaponContext = this.ctx();
 
     for (const b of this.bots) {
       if (b.stun > 0) b.stun = Math.max(0, b.stun - dt);
@@ -146,8 +146,10 @@ export class World {
           b.vz = 0;
           if (impact > 4 && b.alive && live) {
             const by = b.launchedBy ? this.bot(b.launchedBy) ?? null : null;
-            applyDamage(this.ctx(), b, by, 3 + impact * 0.9, "landing", b.p, Math.min(1, impact / 10));
-            b.stun = Math.max(b.stun, 0.5);
+            // Coming down from a big throw is a critical landing.
+            const crit = impact > 10;
+            applyDamage(this.ctx(), b, by, 3 + impact * 0.9, "landing", b.p, Math.min(1, impact / 10), crit);
+            b.stun = Math.max(b.stun, crit ? 0.8 : 0.5);
           }
           b.launchedBy = null;
         }
@@ -158,7 +160,7 @@ export class World {
   }
 
   private ctx(): WeaponContext {
-    return { bots: this.bots, time: this.fightTime, emit: (e) => this.emit(e) };
+    return { bots: this.bots, time: this.fightTime, emit: (e) => this.emit(e), rng: () => this.rng.next() };
   }
 
   private walls(b: Bot, live: boolean) {
@@ -185,7 +187,9 @@ export class World {
       const dmg = (speed - WALL_HURT_SPEED) * 2.2 * airborneMul;
       const recent = this.fightTime - b.lastHitAt < 2.5 ? this.bot(b.lastHitBy ?? "") ?? null : null;
       this.emit({ type: "wall", bot: b.id, speed, at: hit });
-      applyDamage(this.ctx(), b, recent, dmg, "wall", hit, Math.min(1, speed / 9));
+      // Hitting the wall while airborne is a critical: nothing to brace with.
+      const crit = airborneMul > 1 && speed > 5.5;
+      applyDamage(this.ctx(), b, recent, dmg, "wall", hit, Math.min(1, speed / 9), crit);
     } else if (hit && live && speed > 1.2) {
       this.emit({ type: "wall", bot: b.id, speed, at: hit });
     }

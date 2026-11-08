@@ -14,7 +14,8 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); overflow: hidden; }
 #arena { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-#labels, #hud { position: fixed; inset: 0; pointer-events: none; }
+#labels, #callouts, #hud { position: fixed; inset: 0; pointer-events: none; }
+#callouts { z-index: 3; }
 #hud > * { pointer-events: auto; }
 button { font: inherit; color: inherit; background: rgba(255,255,255,0.06); border: 1px solid var(--panel-border); border-radius: 8px; padding: 6px 10px; cursor: pointer; transition: background .15s, border-color .15s; }
 button:hover { background: rgba(255,255,255,0.12); }
@@ -131,3 +132,17 @@ button.primary { background: rgba(110, 231, 255, 0.22); border-color: rgba(110, 
   .hud-ticker { width: 260px; }
   .hud-jev { display: none; }
 }
+
+/* comic callouts */
+.callout { --c: #ffe04a; --size: 1; position: absolute; left: 0; top: 0; display: flex; flex-direction: column; align-items: center; will-change: transform, opacity; filter: drop-shadow(0 6px 0 rgba(0,0,0,.55)); }
+.callout-word { font-family: "Bangers", "Impact", "Arial Black", sans-serif; font-size: 54px; letter-spacing: .04em; line-height: 1; color: var(--c); -webkit-text-stroke: 3px #16100a; paint-order: stroke fill; padding: 18px 34px; background: #fff; clip-path: polygon(50% 0%, 59% 15%, 76% 5%, 77% 22%, 96% 20%, 86% 36%, 100% 50%, 86% 64%, 96% 80%, 77% 78%, 76% 95%, 59% 85%, 50% 100%, 41% 85%, 24% 95%, 23% 78%, 4% 80%, 14% 64%, 0% 50%, 14% 36%, 4% 20%, 23% 22%, 24% 5%, 41% 15%); background: radial-gradient(circle, #fff6c2 0%, #ffd400 55%, #ff7a00 100%); }
+.callout.saw .callout-word { background: radial-gradient(circle, #fff 0%, #ffe34a 50%, #ff9a00 100%); }
+.callout.hammer .callout-word { --c: #fff; background: radial-gradient(circle, #ffb3b3 0%, #ff3b3b 55%, #8a0000 100%); }
+.callout.flip .callout-word, .callout.landing .callout-word { background: radial-gradient(circle, #ffd9b3 0%, #ff8a2a 55%, #c03a00 100%); }
+.callout.wall .callout-word { --c: #fff; background: radial-gradient(circle, #d6e4ff 0%, #6ea0ff 55%, #1d3f99 100%); }
+.callout.crush .callout-word, .callout.saws .callout-word { background: radial-gradient(circle, #d8fff7 0%, #2dd4bf 55%, #0b6b63 100%); }
+.callout.pitted .callout-word { --c: #fff; background: radial-gradient(circle, #ff9d9d 0%, #ff2a1a 55%, #4a0000 100%); }
+.callout.destroyed .callout-word { font-size: 72px; --c: #fff; background: radial-gradient(circle, #fff 0%, #ff5a00 45%, #7a0000 100%); }
+.callout-crit { font-family: "Bangers", "Impact", sans-serif; font-size: 26px; letter-spacing: .14em; color: #fff; background: #e3002b; padding: 2px 14px; transform: rotate(-4deg) translateY(10px); border: 3px solid #16100a; z-index: 1; animation: critflash .18s steps(2) infinite; }
+.callout.crit .callout-word { -webkit-text-stroke: 4px #16100a; }
+@keyframes critflash { 50% { background: #ffd400; color: #16100a; } }

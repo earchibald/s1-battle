@@ -14,7 +14,7 @@ export const GRABBER: BotDef = {
   tagline: "Where you go is up to me now.",
   color: 0x2dd4bf,
   accent: 0x14323a,
-  stats: { hp: 300, mass: 1.35, maxSpeed: 5.6, accel: 11, turnRate: 3.9, armor: 0.2, radius: 0.95 },
+  stats: { hp: 350, mass: 1.35, maxSpeed: 5.6, accel: 11, turnRate: 3.9, armor: 0.2, radius: 0.95 },
   maneuvers: {
     engage: "Drive at the target with the jaws open to get it between them.",
     grab_now:

@@ -14,7 +14,7 @@ export const SAW: BotDef = {
   tagline: "Fast, fragile, and all teeth.",
   color: 0xe6a92b,
   accent: 0x1a1a1a,
-  stats: { hp: 300, mass: 1.0, maxSpeed: 7.2, accel: 15, turnRate: 4.8, armor: 0.0, radius: 0.85 },
+  stats: { hp: 350, mass: 1.0, maxSpeed: 7.2, accel: 15, turnRate: 4.8, armor: 0.0, radius: 0.85 },
   maneuvers: {
     engage:
       "Charge straight at the target with the spinning blade leading. Good when the blade is at full speed and the target is not pointing a ready weapon at me.",

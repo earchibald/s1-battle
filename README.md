@@ -28,6 +28,18 @@ Open http://localhost:5173. Without an API key the arena still runs on baseline 
 Arena hazards: a **pit** that opens on a cycle (first at 30 s, 12 s open / 18 s closed) and two **kill saw**
 slots that rise every 10 s. Walls hurt at speed, especially when you arrive airborne.
 
+**Critical hits** are earned, not rolled (plus a small random chance): a saw bite from *behind*, a hammer on a
+bot that is stunned / airborne / held, a flip that sends a bot toward a wall, a crit flip's landing, a wall hit
+while airborne, and a crush from a rear grab. Crits do 1.75× damage, chime, flash a comic "CRITICAL!" callout,
+and buy a beat of slow motion. This is what makes Jev's `flank` decision worth choosing.
+
+**Sound** is entirely synthesized with Web Audio (`src/audio/sound.ts`): saw whine tracks blade spin, hammer
+thuds, pneumatic flips, metallic wall clangs, a pit klaxon, a crowd that swells on big moments, and a slide
+whistle for anyone who goes down the pit. Click anywhere once to unlock audio; `M` or the 🔊 button mutes.
+
+**Callouts** (`src/ui/callouts.ts`): comic-book "WHAM!" / "SHRED!" / "K.O.!" bursts anchored to the hit for
+the hits worth shouting about.
+
 Match rules: 4-bot free-for-all, 3-minute cap, last bot standing wins; on time-out the judges score health
 then damage dealt. Matches typically run 40–90 s.
 
@@ -62,19 +74,20 @@ server/      Express: /api/decide proxies Jev (key stays server-side), /api/heal
 src/sim/     deterministic simulation: physics, weapons, hazards, perception, controller, match rules
 src/brain/   decision scheduler (cadence, event nudges, stale-answer guard, fallback)
 src/render/  Three.js arena, procedural bot models with animated weapon rigs, sparks/smoke/rings, camera
-src/ui/      HUD cards, ticker/commentary, world-anchored labels, result screen
+src/ui/      HUD cards, ticker/commentary, world-anchored labels, comic callouts, result screen
+src/audio/   procedural Web Audio sound engine (no asset files)
 scripts/     probe-jev.ts (latency check), headless.ts (balance tuning: runs matches with no renderer)
 ```
 
 ## Controls
 
-Space pause · N new match · C auto/free camera · D debug nav lines · 1/2/3 speed · J all Jev · B all baseline.
+Space pause · N new match · C auto/free camera · D debug nav lines · M mute · 1/2/3 speed · J all Jev · B all baseline.
 Click a bot card's brain badge to switch just that bot.
 
 ## Tuning and extending
 
 - `npx tsx scripts/headless.ts 24` runs 24 baseline-vs-baseline matches and prints lengths, winners, and
-  elimination types. Weapon numbers live in `src/sim/weapons.ts` (`TUNING`), hazard timing in `src/sim/arena.ts`.
+  elimination types. Weapon numbers and crit rules live in `src/sim/weapons.ts` (`TUNING`, `CRIT_MULT`, `isBehind`), hazard timing in `src/sim/arena.ts`.
 - Add a maneuver: add it to `Maneuver` in `shared/types.ts`, describe it in the bot's `maneuvers`, gate it in
   `available()`, and implement it in `controller.ts`.
 - Add a bot: new file in `shared/bots/`, register in `BOT_DEFS`, add a weapon branch in `src/sim/weapons.ts`

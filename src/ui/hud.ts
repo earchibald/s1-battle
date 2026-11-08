@@ -12,6 +12,7 @@ export interface HudCallbacks {
   setSpeed(x: number): void;
   toggleCamera(): void;
   toggleDebug(): void;
+  toggleSound(): void;
 }
 
 export interface JevInfo {
@@ -90,6 +91,7 @@ export class Hud {
         <div class="seg"><button data-k="s05">½×</button><button data-k="s1" class="on">1×</button><button data-k="s2">2×</button></div>
         <button data-k="cam" title="C">🎥 Auto cam</button>
         <button data-k="debug" title="D">◎ Debug</button>
+        <button data-k="sound" title="M">🔊</button>
         <div class="seg"><button data-k="alljev">All Jev</button><button data-k="allbase">All Baseline</button></div>
         <button data-k="new" class="primary" title="N">⟳ New match</button>
       </div>
@@ -112,6 +114,7 @@ export class Hud {
     this.controls.s2.onclick = () => cb.setSpeed(2);
     this.controls.cam.onclick = () => cb.toggleCamera();
     this.controls.debug.onclick = () => cb.toggleDebug();
+    this.controls.sound.onclick = () => cb.toggleSound();
     this.controls.alljev.onclick = () => cb.setAllBrains("jev");
     this.controls.allbase.onclick = () => cb.setAllBrains("baseline");
     this.controls.new.onclick = () => cb.newMatch();
@@ -184,8 +187,10 @@ export class Hud {
       </div>`;
   }
 
-  setControls(paused: boolean, speed: number, autoCam: boolean, debug: boolean) {
+  setControls(paused: boolean, speed: number, autoCam: boolean, debug: boolean, muted = false) {
     this.controls.pause.textContent = paused ? "▶ Resume" : "⏸ Pause";
+    this.controls.sound.textContent = muted ? "🔇" : "🔊";
+    this.controls.sound.classList.toggle("on", !muted);
     this.controls.s05.classList.toggle("on", speed === 0.5);
     this.controls.s1.classList.toggle("on", speed === 1);
     this.controls.s2.classList.toggle("on", speed === 2);

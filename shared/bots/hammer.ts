@@ -14,7 +14,7 @@ export const HAMMER: BotDef = {
   tagline: "Slow. Armored. Terminal.",
   color: 0xd13b3b,
   accent: 0x2b2b30,
-  stats: { hp: 300, mass: 1.7, maxSpeed: 4.6, accel: 9, turnRate: 3.1, armor: 0.35, radius: 1.0 },
+  stats: { hp: 350, mass: 1.7, maxSpeed: 4.6, accel: 9, turnRate: 3.1, armor: 0.35, radius: 1.0 },
   maneuvers: {
     engage: "Drive at the target to get it within hammer reach, keeping my front toward it.",
     strike_now:

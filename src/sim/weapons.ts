@@ -14,19 +14,33 @@ export interface WeaponContext {
   bots: Bot[];
   time: number;
   emit(e: SimEvent): void;
+  /** Uniform 0..1, from the world's seeded RNG so headless runs stay reproducible. */
+  rng(): number;
+}
+
+/** Critical hits multiply damage and are earned by position and timing, with a small random chance. */
+export const CRIT_MULT = 1.75;
+const CRIT_CHANCE = { saw: 0.06, hammer: 0.1, flipper: 0.08 };
+
+/** True when `attacker` is behind `victim` (inside the rear 100° or so). */
+export function isBehind(attacker: Bot, victim: Bot): boolean {
+  const toAttacker = norm(sub(attacker.p, victim.p));
+  return toAttacker.x * Math.cos(victim.heading) + toAttacker.y * Math.sin(victim.heading) < -0.45;
 }
 
 const TUNING = {
   saw: { spinUpSeconds: 2.0, baseDamage: 5, spinDamage: 12, biteCost: 0.36, hitCooldown: 0.55, hopSpin: 0.9 },
   hammer: { windup: 0.28, strike: 0.1, recover: 0.4, cooldown: 2.0, damage: 27, stun: 0.6 },
   grabber: { crushDps: 5, maxHold: 3.6, cooldown: 3.4 },
-  flipper: { cooldown: 2.0, launchVz: 9.5, launchForward: 7.0, damage: 12, anim: 0.45 },
+  flipper: { cooldown: 2.1, launchVz: 9.2, launchForward: 6.5, damage: 10, anim: 0.45 },
 };
 export const WEAPON_TUNING = TUNING;
+/** Arena half-size minus a bot; imported lazily to avoid a cycle with arena.ts. */
+const WALL_LIMIT = 10 - 0.9;
 
-export function applyDamage(ctx: WeaponContext, victim: Bot, attacker: Bot | null, raw: number, weapon: HitWeapon, at = victim.p, power = 1): number {
+export function applyDamage(ctx: WeaponContext, victim: Bot, attacker: Bot | null, raw: number, weapon: HitWeapon, at = victim.p, power = 1, crit = false): number {
   if (!victim.alive) return 0;
-  const amount = raw * (1 - victim.def.stats.armor);
+  const amount = raw * (crit ? CRIT_MULT : 1) * (1 - victim.def.stats.armor);
   victim.hp -= amount;
   victim.stats.damageTaken += amount;
   victim.lastDamagedAt = ctx.time;
@@ -36,7 +50,7 @@ export function applyDamage(ctx: WeaponContext, victim: Bot, attacker: Bot | nul
     victim.lastHitBy = attacker.id;
     victim.lastHitAt = ctx.time;
   }
-  ctx.emit({ type: "hit", attacker: attacker?.id ?? "arena", victim: victim.id, amount, weapon, at: { ...at }, power });
+  ctx.emit({ type: "hit", attacker: attacker?.id ?? "arena", victim: victim.id, amount, weapon, at: { ...at }, power, crit });
   if (victim.hp <= 0) destroy(ctx, victim, attacker?.id ?? victim.lastHitBy);
   return amount;
 }
@@ -111,9 +125,11 @@ function updateSaw(bot: Bot, ctx: WeaponContext, dt: number) {
     w.hitCooldowns.set(victim.id, T.hitCooldown);
     const dir = norm(sub(victim.p, bot.p));
     const power = w.spin;
-    applyDamage(ctx, victim, bot, T.baseDamage + T.spinDamage * power, "saw", bot.weaponHitbox().at, power);
+    // Rear bites are critical: the blade reaches unarmored motors. That is what flanking is for.
+    const crit = isBehind(bot, victim) || (power > 0.9 && ctx.rng() < CRIT_CHANCE.saw);
+    applyDamage(ctx, victim, bot, T.baseDamage + T.spinDamage * power, "saw", bot.weaponHitbox().at, power, crit);
     // Blade bites: the victim gets thrown, the saw bot recoils, and the blade loses speed.
-    const kick = (3.5 + 6 * power) / victim.mass;
+    const kick = ((3.5 + 6 * power) * (crit ? 1.4 : 1)) / victim.mass;
     victim.knock.x += dir.x * kick;
     victim.knock.y += dir.y * kick;
     bot.knock.x -= dir.x * (2 + 3 * power) / bot.mass;
@@ -146,8 +162,10 @@ function updateHammer(bot: Bot, ctx: WeaponContext, dt: number) {
         const at = bot.weaponHitbox().at;
         for (const victim of victims) {
           const dir = norm(sub(victim.p, bot.p));
-          applyDamage(ctx, victim, bot, T.damage, "hammer", at, 1);
-          victim.stun = Math.max(victim.stun, T.stun);
+          // A hammer on something that cannot move is a critical: stunned, airborne, or held in jaws.
+          const crit = victim.stun > 0 || victim.airborne || victim.heldBy !== null || ctx.rng() < CRIT_CHANCE.hammer;
+          applyDamage(ctx, victim, bot, T.damage, "hammer", at, 1, crit);
+          victim.stun = Math.max(victim.stun, T.stun * (crit ? 1.5 : 1));
           victim.knock.x += dir.x * 3 / victim.mass;
           victim.knock.y += dir.y * 3 / victim.mass;
           // Slam anything airborne straight back down.
@@ -191,7 +209,7 @@ function updateGrabber(bot: Bot, ctx: WeaponContext, dt: number) {
     // Crush damage ticks in small bites so the HUD and sparks have a rhythm.
     if (w.crushTick >= 0.5) {
       w.crushTick -= 0.5;
-      applyDamage(ctx, victim, bot, T.crushDps * 0.5, "crush", bot.weaponHitbox().at, 0.4);
+      applyDamage(ctx, victim, bot, T.crushDps * 0.5, "crush", bot.weaponHitbox().at, 0.4, w.critHold);
     }
     return;
   }
@@ -204,6 +222,8 @@ function updateGrabber(bot: Bot, ctx: WeaponContext, dt: number) {
       victim.vel = { x: 0, y: 0 };
       w.holdTime = 0;
       w.crushTick = 0;
+      // Jaws around the back end find the soft parts: a rear grab crushes critically.
+      w.critHold = isBehind(bot, victim);
       ctx.emit({ type: "grab", bot: bot.id, victim: victim.id });
     }
   }
@@ -224,13 +244,18 @@ function updateFlipper(bot: Bot, ctx: WeaponContext, dt: number) {
       if (victim.heldBy) releaseHold(ctx, victim.heldBy, "stunned");
       if (victim.holding) releaseHold(ctx, victim, "stunned");
       const massFactor = Math.min(1, 1.15 / victim.mass);
+      // Flipping a bot that is about to meet a wall is a critical: harder throw, uglier landing.
+      const ahead = { x: victim.p.x + f.x * 1.8, y: victim.p.y + f.y * 1.8 };
+      const nearWall = Math.abs(ahead.x) > WALL_LIMIT || Math.abs(ahead.y) > WALL_LIMIT;
+      const crit = nearWall || ctx.rng() < CRIT_CHANCE.flipper;
+      const throwMul = crit ? 1.15 : 1;
       victim.airborne = true;
-      victim.vz = T.launchVz * massFactor;
+      victim.vz = T.launchVz * massFactor * (crit ? 1.12 : 1);
       victim.launchedBy = bot.id;
       victim.vel = { x: 0, y: 0 };
-      victim.knock.x += f.x * T.launchForward * massFactor;
-      victim.knock.y += f.y * T.launchForward * massFactor;
-      applyDamage(ctx, victim, bot, T.damage, "flip", at, 0.6);
+      victim.knock.x += f.x * T.launchForward * massFactor * throwMul;
+      victim.knock.y += f.y * T.launchForward * massFactor * throwMul;
+      applyDamage(ctx, victim, bot, T.damage, "flip", at, 0.6, crit);
     }
     // Recoil
     bot.knock = scale(f, -1.2);

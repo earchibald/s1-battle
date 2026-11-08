@@ -9,10 +9,14 @@ import { World } from "./sim/world";
 import { commentate } from "./ui/commentary";
 import { Hud, maneuverLabel, type JevInfo } from "./ui/hud";
 import { Labels } from "./ui/labels";
+import { Callouts } from "./ui/callouts";
+import { SoundEngine } from "./audio/sound";
+import { pitPhase, sawRaise } from "./sim/arena";
+import type { HammerPhase } from "./sim/bot";
 
 /**
  * S1 Arena entry point. Fixed-step simulation, async brains, Three.js rendering, HTML HUD.
- * Keyboard: Space pause · N new match · C camera · D debug · 1/2/3 speed · J/B all Jev/baseline.
+ * Keyboard: Space pause · N new match · C camera · D debug · M mute · 1/2/3 speed · J/B all Jev/baseline.
  */
 
 const FIXED_DT = 1 / 60;
@@ -24,6 +28,16 @@ const scene = new ArenaScene(canvas);
 const effects = new Effects();
 scene.scene.add(effects.group);
 const labels = new Labels(document.getElementById("labels")!, scene.camera);
+const callouts = new Callouts(document.getElementById("callouts")!, scene.camera);
+const sound = new SoundEngine();
+// Browsers gate audio behind a gesture; the first click or key anywhere unlocks it.
+const unlock = () => sound.unlock();
+window.addEventListener("pointerdown", unlock);
+window.addEventListener("keydown", unlock);
+/** Last time each saw bot's blade connected, for the whine's "biting" timbre. */
+const lastBite = new Map<string, number>();
+const lastHammerPhase = new Map<string, HammerPhase>();
+let lastCountdownTick = -1;
 
 let paused = false;
 let speed = 1;
@@ -55,22 +69,30 @@ const hud = new Hud(document.getElementById("hud")!, {
   newMatch: () => startMatch(),
   togglePause() {
     paused = !paused;
-    hud.setControls(paused, speed, scene.autoCamera, debug);
+    syncControls();
   },
   setSpeed(x) {
     speed = x;
-    hud.setControls(paused, speed, scene.autoCamera, debug);
+    syncControls();
   },
   toggleCamera() {
     scene.autoCamera = !scene.autoCamera;
-    hud.setControls(paused, speed, scene.autoCamera, debug);
+    syncControls();
   },
   toggleDebug() {
     debug = !debug;
     if (debugLines) debugLines.visible = debug;
-    hud.setControls(paused, speed, scene.autoCamera, debug);
+    syncControls();
+  },
+  toggleSound() {
+    sound.unlock();
+    sound.setMuted(!sound.muted);
+    syncControls();
   },
 });
+function syncControls() {
+  hud.setControls(paused, speed, scene.autoCamera, debug, sound.muted);
+}
 
 function startMatch() {
   // Tear down the previous match's meshes.
@@ -79,6 +101,8 @@ function startMatch() {
   brains = new Map();
   endedAt = null;
   slowmo = 1;
+  lastCountdownTick = -1;
+  lastHammerPhase.clear();
   hud.hideResult();
 
   // Rotate start corners each match so nobody always spawns next to the pit.
@@ -116,29 +140,57 @@ function handleEvent(e: SimEvent) {
       const victim = world.bot(e.victim);
       const attacker = world.bot(e.attacker);
       const dir = victim && attacker ? toWorld(victim.p).sub(toWorld(attacker.p)).normalize() : new THREE.Vector3(0, 1, 0);
-      if (e.weapon === "saw") effects.sparkBurst(at, dir, 0.4 + e.power * 0.6, 0xffd36e);
-      else if (e.weapon === "hammer") {
+      const now = world.time;
+      const crit = e.crit;
+      let shout = false;
+      if (e.weapon === "saw") {
+        effects.sparkBurst(at, dir, 0.4 + e.power * 0.6, 0xffd36e);
+        sound.sawBite(e.power);
+        lastBite.set(e.attacker, now);
+        shout = e.amount >= 22 || crit;
+      } else if (e.weapon === "hammer") {
         effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 1, 0xffffff);
         effects.ring(at, 0xff6a3d, 1.4);
         scene.kick(0.9);
         triggerSlowmo(0.35, 0.45);
+        sound.hammerStrike(true, crit);
+        shout = true;
       } else if (e.weapon === "flip") {
         effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 0.5, 0x9ad7ff);
         effects.ring(at, 0x6ee7ff, 1);
         scene.kick(0.4);
+        sound.flip(true);
+        shout = true;
       } else if (e.weapon === "landing") {
         effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), Math.min(1, e.amount / 15), 0xbbbbbb);
         effects.ring(at, 0xffffff, 0.9);
         scene.kick(0.5);
+        sound.landing(e.power, crit);
+        shout = e.amount >= 14 || crit;
       } else if (e.weapon === "wall") {
         effects.sparkBurst(at, dir.negate(), Math.min(1, e.amount / 12), 0xffaa66);
         scene.kick(0.25);
+        shout = e.amount >= 14 || crit;
       } else if (e.weapon === "saws") {
-        if (e.power > 0) effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 0.5, 0xffc864);
+        if (e.power > 0) {
+          effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 0.5, 0xffc864);
+          sound.sawsChew();
+        }
       } else if (e.weapon === "crush") {
-        effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 0.15, 0x2dd4bf);
+        effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), crit ? 0.5 : 0.15, 0x2dd4bf);
+        sound.crush();
+        shout = crit && Math.random() < 0.3;
       }
-      if (e.amount >= 2.5) labels.damage(e.at, e.amount, e.amount > 20 ? "big" : e.weapon === "saw" ? "saw" : e.weapon === "saws" ? "hazard" : "");
+      if (crit) {
+        // Crits get the full treatment: extra sparks, a chime, a camera kick, a beat of slow motion.
+        effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 1, 0xfff1a8);
+        effects.ring(at, 0xffd400, 1.6);
+        scene.kick(0.6);
+        triggerSlowmo(0.45, 0.4);
+        sound.crit();
+      } else if (e.amount >= 20) sound.crowdReact(0.3);
+      if (shout) callouts.show(e.at, e.weapon, { size: crit ? 1.6 : e.amount >= 30 ? 1.4 : 1, crit, now });
+      if (e.amount >= 2.5) labels.damage(e.at, e.amount, crit ? "big" : e.amount > 20 ? "big" : e.weapon === "saw" ? "saw" : e.weapon === "saws" ? "hazard" : "");
       break;
     }
     case "strike":
@@ -146,13 +198,31 @@ function handleEvent(e: SimEvent) {
         effects.sparkBurst(toWorld(e.at, 0.1), new THREE.Vector3(0, 1, 0), 0.4, 0xffffff);
         effects.ring(toWorld(e.at), 0xffffff, 0.8);
         scene.kick(0.35);
+        sound.hammerStrike(false);
       }
       break;
     case "flip":
       effects.ring(toWorld(e.at), 0xff7a1a, 0.7);
+      if (!e.victim) sound.flip(false);
       break;
     case "grab":
       effects.sparkBurst(toWorld(world.bot(e.victim)!.p, 0.6), new THREE.Vector3(0, 1, 0), 0.3, 0x2dd4bf);
+      sound.grab();
+      break;
+    case "release":
+      sound.release();
+      break;
+    case "wall":
+      sound.wall(e.speed);
+      break;
+    case "pit_open":
+      sound.pitOpen();
+      break;
+    case "saws_rising":
+      sound.sawsRising();
+      break;
+    case "match_start":
+      sound.countdownBeep(true);
       break;
     case "destroyed": {
       const at = toWorld(e.at, 0.5);
@@ -162,6 +232,8 @@ function handleEvent(e: SimEvent) {
       for (let i = 0; i < 12; i++) effects.smokePuff(at, true);
       scene.kick(1.1);
       triggerSlowmo(0.25, 1.3);
+      sound.destroyed();
+      callouts.show(e.at, "destroyed", { size: 2, now: world.time });
       break;
     }
     case "pitted": {
@@ -170,6 +242,8 @@ function handleEvent(e: SimEvent) {
       for (let i = 0; i < 6; i++) effects.smokePuff(at, false);
       scene.kick(0.6);
       triggerSlowmo(0.3, 1.2);
+      sound.pitted();
+      callouts.show(e.at, "pitted", { size: 1.6, now: world.time });
       break;
     }
     case "decision": {
@@ -180,7 +254,35 @@ function handleEvent(e: SimEvent) {
     case "match_end":
       endedAt = performance.now();
       triggerSlowmo(0.4, 1.5);
+      sound.matchEnd();
       break;
+  }
+}
+
+/** Continuous sounds and phase-transition cues that have no discrete sim event. */
+function updateAudio() {
+  const fighting = world.phase === "fighting";
+  for (const b of world.bots) {
+    if (b.kind === "saw") {
+      const biting = world.time - (lastBite.get(b.id) ?? -10) < 0.2;
+      sound.updateSaw(b.id, paused ? 0 : b.weapon.spin, b.alive && world.phase !== "ended", biting);
+    }
+    if (b.kind === "hammer") {
+      const prev = lastHammerPhase.get(b.id);
+      if (prev !== b.weapon.hammerPhase) {
+        if (b.weapon.hammerPhase === "windup") sound.hammerWindup();
+        lastHammerPhase.set(b.id, b.weapon.hammerPhase);
+      }
+    }
+  }
+  sound.updateGrind(fighting && !paused ? sawRaise(world.fightTime) : 0);
+  sound.updateAlarm(fighting && pitPhase(world.fightTime) === "warning");
+  if (world.phase === "countdown") {
+    const tick = Math.ceil(world.countdown);
+    if (tick !== lastCountdownTick && tick > 0) {
+      lastCountdownTick = tick;
+      sound.countdownBeep(false);
+    }
   }
 }
 
@@ -259,8 +361,12 @@ window.addEventListener("keydown", (ev) => {
       defaultMode = "baseline";
       for (const b of brains.values()) b.mode = "baseline";
       break;
+    case "m":
+    case "M":
+      sound.setMuted(!sound.muted);
+      break;
   }
-  hud.setControls(paused, speed, scene.autoCamera, debug);
+  syncControls();
 });
 
 // Main loop
@@ -299,6 +405,8 @@ function frame(now: number) {
   const aggression = alive.length <= 2 ? 1 : 0;
   scene.updateCamera(focus, realDt, aggression);
   labels.update(world.bots, realDt, world.time);
+  callouts.update(realDt);
+  updateAudio();
   updateDebug();
   hud.update(world, brains);
   if (world.phase === "ended" && endedAt !== null) {
@@ -310,7 +418,11 @@ function frame(now: number) {
 }
 
 startMatch();
-hud.setControls(paused, speed, scene.autoCamera, debug);
+syncControls();
+// Debug handle for the console: window.__s1.world, .sound, .brains
+Object.assign(window as unknown as Record<string, unknown>, {
+  __s1: { get world() { return world; }, get brains() { return brains; }, sound, scene, effects },
+});
 void pollJev();
 setInterval(() => void pollJev(), 2500);
 requestAnimationFrame(frame);

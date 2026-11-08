@@ -4,7 +4,7 @@ import type { Vec } from "./math";
 export type HitWeapon = "saw" | "hammer" | "crush" | "flip" | "landing" | "wall" | "saws";
 
 export type SimEvent =
-  | { type: "hit"; attacker: string; victim: string; amount: number; weapon: HitWeapon; at: Vec; power: number }
+  | { type: "hit"; attacker: string; victim: string; amount: number; weapon: HitWeapon; at: Vec; power: number; crit: boolean }
   | { type: "strike"; bot: string; landed: boolean; at: Vec }
   | { type: "grab"; bot: string; victim: string }
   | { type: "release"; bot: string; victim: string; reason: "timeout" | "chosen" | "stunned" | "destroyed" }

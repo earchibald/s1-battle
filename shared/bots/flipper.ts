@@ -14,7 +14,7 @@ export const FLIPPER: BotDef = {
   tagline: "Everything is airborne eventually.",
   color: 0xff7a1a,
   accent: 0x2a1c12,
-  stats: { hp: 300, mass: 1.15, maxSpeed: 6.6, accel: 13, turnRate: 4.3, armor: 0.12, radius: 0.9 },
+  stats: { hp: 350, mass: 1.15, maxSpeed: 6.6, accel: 13, turnRate: 4.3, armor: 0.12, radius: 0.9 },
   maneuvers: {
     engage: "Drive wedge-first under the target's front so the flipper can get beneath it.",
     flip_now:

@@ -23,6 +23,8 @@ export interface WeaponState {
   holdTime: number;
   /** Crush tick accumulator for periodic spark events. */
   crushTick: number;
+  /** Grabber: current hold was taken from behind, so crush ticks are critical. */
+  critHold: boolean;
 }
 
 export interface BotStatsSheet {
@@ -78,6 +80,7 @@ export class Bot {
     hitCooldowns: new Map(),
     holdTime: 0,
     crushTick: 0,
+    critHold: false,
   };
 
   // Controls written by the controller each tick, read by the physics/weapon update.
