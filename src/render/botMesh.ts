@@ -4,7 +4,11 @@ import { toWorld } from "./scene";
 
 /**
  * Procedural robot models. Every bot shares a chassis + wheels, and each kind gets a mechanically
- * honest weapon rig that animates from the simulation's weapon state:
+ * honest weapon rig that animates from the simulation's weapon state. The build shows on the body:
+ * armor level adds side plates, motor level grows the wheels, weapon power scales the rig, frame
+ * level scales the chassis.
+ *
+ * Weapon rigs:
  *   saw     – vertical disc that spins with `weapon.spin`
  *   hammer  – arm that swings through windup / strike / recover
  *   grabber – jaws that open/close, a top claw that comes down while holding
@@ -45,11 +49,16 @@ export class BotMesh {
   private claw?: THREE.Group;
   private plate?: THREE.Group;
   private smokeTimer = 0;
+  private wheelScale = 1;
+  private rigScale = 1;
 
   constructor(bot: Bot) {
     this.bot = bot;
+    const L = bot.def.build.levels;
+    this.wheelScale = 0.85 + L.motor * 0.05;
+    this.rigScale = 0.82 + L.power * 0.06;
     this.body = new THREE.Group();
-    this.body.scale.setScalar(1.18);
+    this.body.scale.setScalar(1.18 * (0.955 + L.frame * 0.015));
     this.group.add(this.body);
     this.ringMat = new THREE.MeshBasicMaterial({ color: bot.def.color, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
     this.ring = new THREE.Mesh(new THREE.RingGeometry(bot.radius + 0.12, bot.radius + 0.26, 40), this.ringMat);
@@ -70,6 +79,26 @@ export class BotMesh {
         this.buildFlipper();
         break;
     }
+    this.addArmor(L.armor);
+  }
+
+  /** Armor plating: one riveted side plate per level, alternating sides, front to back. */
+  private addArmor(level: number) {
+    if (level <= 0) return;
+    const plateMat = this.mat(0x4a4f5a, { roughness: 0.42, metalness: 0.92 });
+    const r = this.bot.radius;
+    for (let i = 0; i < level; i++) {
+      const side = i % 2 === 0 ? 1 : -1;
+      const x = 0.25 - Math.floor(i / 2) * 0.32;
+      const z = side * (r * 0.62 + 0.02);
+      const plate = this.box(0.3, 0.2, 0.06, plateMat, x, 0.5, z);
+      plate.rotation.x = side * 0.1;
+      for (const dx of [-0.1, 0.1]) {
+        const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.022, 6, 6), STEEL);
+        rivet.position.set(x + dx, 0.5, z + side * 0.035);
+        this.body.add(rivet);
+      }
+    }
   }
 
   private mat(color: number, extra: Partial<THREE.MeshStandardMaterialParameters> = {}): THREE.MeshStandardMaterial {
@@ -82,8 +111,8 @@ export class BotMesh {
     for (let i = 0; i < count; i++) {
       const xi = count === 1 ? 0 : x * (i === 0 ? 1 : -1);
       for (const side of [-1, 1]) {
-        const wh = wheel(r, w);
-        wh.position.set(xi, r, side * z);
+        const wh = wheel(r * this.wheelScale, w);
+        wh.position.set(xi, r * this.wheelScale, side * z);
         this.body.add(wh);
         this.wheels.push(wh);
       }
@@ -114,6 +143,7 @@ export class BotMesh {
     this.box(0.08, 0.5, 0.1, STEEL, 0.55, 0.62, -0.14);
     this.blade = new THREE.Group();
     this.blade.position.set(this.bot.radius + 0.22, 0.62, 0);
+    this.blade.scale.setScalar(this.rigScale);
     const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.56, 0.56, 0.07, 32), STEEL);
     disc.rotation.x = Math.PI / 2; // axis along z: disc stands vertical, facing forward
     disc.castShadow = true;
@@ -154,11 +184,13 @@ export class BotMesh {
     this.box(0.25, 0.5, 0.3, trim, -0.5, 0.95, -0.22);
     this.hammerArm = new THREE.Group();
     this.hammerArm.position.set(-0.5, 1.12, 0);
+    this.hammerArm.scale.set(1, this.rigScale, this.rigScale);
     const arm = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.14, 0.22), STEEL);
     arm.position.set(0.95, 0, 0);
     arm.castShadow = true;
     this.hammerArm.add(arm);
     const head = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.42, 0.55), trim);
+    head.scale.setScalar(this.rigScale);
     head.position.set(1.95, -0.05, 0);
     head.castShadow = true;
     this.hammerArm.add(head);
@@ -207,6 +239,8 @@ export class BotMesh {
     };
     this.jawL = makeJaw(1);
     this.jawR = makeJaw(-1);
+    this.jawL.scale.set(this.rigScale, this.rigScale, 1);
+    this.jawR.scale.set(this.rigScale, this.rigScale, 1);
     this.claw = new THREE.Group();
     this.claw.position.set(0.35, 0.9, 0);
     const clawArm = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.12, 0.18), STEEL);
@@ -238,6 +272,7 @@ export class BotMesh {
     this.body.add(hinge);
     this.plate = new THREE.Group();
     this.plate.position.set(0.2, 0.42, 0);
+    this.plate.scale.set(this.rigScale, 1, 1);
     const plate = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.06, 1.25), STEEL);
     plate.position.set(0.48, 0, 0);
     plate.castShadow = true;

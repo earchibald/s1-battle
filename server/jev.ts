@@ -1,6 +1,9 @@
 import { TypeSafeClient, APIError, RateLimitError } from "@typesafe-ai/sdk";
 import type { BotSense } from "../shared/bots/common";
-import { botDef, buildQuestions } from "../shared/bots/index";
+import type { BotBuild } from "../shared/build";
+import { normalizeBuild } from "../shared/build";
+import { stockBuild } from "../shared/bots/index";
+import { buildQuestions } from "../shared/logic";
 import type { BotKind, DecideError, DecideResponse, JevAnswer } from "../shared/types";
 
 /**
@@ -54,10 +57,15 @@ export function getStats(): JevStats {
   return { ...stats };
 }
 
-export async function decide(kind: BotKind, sense: BotSense): Promise<DecideResponse | DecideError> {
+/**
+ * `rawBuild` is the client's editable build (name, techniques, logic). It is normalized against the stock
+ * build for the kind, so a malformed or missing one simply means stock prompts.
+ */
+export async function decide(kind: BotKind, sense: BotSense, rawBuild?: unknown): Promise<DecideResponse | DecideError> {
   if (!client) return { ok: false, error: "TYPESAFE_API_KEY is not set", status: 503 };
-  const def = botDef(kind);
-  const questions = buildQuestions(def, sense);
+  const build: BotBuild = rawBuild ? normalizeBuild(rawBuild, stockBuild, "request") : stockBuild(kind);
+  if (build.kind !== kind) build.kind = kind;
+  const questions = buildQuestions(build, sense);
 
   const t0 = performance.now();
   stats.requests++;

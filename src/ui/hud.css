@@ -21,6 +21,8 @@ button { font: inherit; color: inherit; background: rgba(255,255,255,0.06); bord
 button:hover { background: rgba(255,255,255,0.12); }
 button.on { background: rgba(110, 231, 255, 0.18); border-color: rgba(110, 231, 255, 0.5); }
 button.primary { background: rgba(110, 231, 255, 0.22); border-color: rgba(110, 231, 255, 0.6); }
+button.garage { background: rgba(200,176,106,.14); border-color: rgba(200,176,106,.5); }
+button.garage:hover { background: rgba(200,176,106,.26); }
 
 /* top bar */
 .hud-top { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 18px; pointer-events: none; }

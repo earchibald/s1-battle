@@ -28,13 +28,7 @@ export function isBehind(attacker: Bot, victim: Bot): boolean {
   return toAttacker.x * Math.cos(victim.heading) + toAttacker.y * Math.sin(victim.heading) < -0.45;
 }
 
-const TUNING = {
-  saw: { spinUpSeconds: 2.0, baseDamage: 5, spinDamage: 12, biteCost: 0.36, hitCooldown: 0.55, hopSpin: 0.9 },
-  hammer: { windup: 0.28, strike: 0.1, recover: 0.4, cooldown: 2.0, damage: 27, stun: 0.6 },
-  grabber: { crushDps: 5, maxHold: 3.6, cooldown: 3.4 },
-  flipper: { cooldown: 2.1, launchVz: 9.2, launchForward: 6.5, damage: 10, anim: 0.45 },
-};
-export const WEAPON_TUNING = TUNING;
+/** Weapon numbers come from each bot's build (see shared/build.ts `derive`); `bot.def.tuning` holds them. */
 /** Arena half-size minus a bot; imported lazily to avoid a cycle with arena.ts. */
 const WALL_LIMIT = 10 - 0.9;
 
@@ -73,8 +67,8 @@ export function releaseHold(ctx: WeaponContext, holder: Bot, reason: "timeout" |
   holder.holding = null;
   victim.heldBy = null;
   holder.weapon.holdTime = 0;
-  holder.weapon.cooldown = TUNING.grabber.cooldown;
-  holder.weapon.cooldownMax = TUNING.grabber.cooldown;
+  holder.weapon.cooldown = holder.def.tuning.grabber.cooldown;
+  holder.weapon.cooldownMax = holder.def.tuning.grabber.cooldown;
   // A little shove so the two separate cleanly.
   const f = holder.forward;
   victim.knock.x += f.x * 2.5;
@@ -115,7 +109,7 @@ export function updateWeapon(bot: Bot, ctx: WeaponContext, dt: number) {
 
 function updateSaw(bot: Bot, ctx: WeaponContext, dt: number) {
   const w = bot.weapon;
-  const T = TUNING.saw;
+  const T = bot.def.tuning.saw;
   if (bot.alive && !bot.heldBy) w.spin = Math.min(1, w.spin + dt / T.spinUpSeconds);
   else w.spin = Math.max(0, w.spin - dt * 0.5);
   if (!bot.alive || bot.airborne || w.spin < 0.2) return;
@@ -145,7 +139,7 @@ function updateSaw(bot: Bot, ctx: WeaponContext, dt: number) {
 
 function updateHammer(bot: Bot, ctx: WeaponContext, dt: number) {
   const w = bot.weapon;
-  const T = TUNING.hammer;
+  const T = bot.def.tuning.hammer;
   switch (w.hammerPhase) {
     case "idle":
       if (bot.trigger && w.cooldown <= 0 && bot.controllable) {
@@ -197,7 +191,7 @@ function updateHammer(bot: Bot, ctx: WeaponContext, dt: number) {
 
 function updateGrabber(bot: Bot, ctx: WeaponContext, dt: number) {
   const w = bot.weapon;
-  const T = TUNING.grabber;
+  const T = bot.def.tuning.grabber;
   if (bot.holding) {
     const victim = bot.holding;
     w.holdTime += dt;
@@ -231,7 +225,7 @@ function updateGrabber(bot: Bot, ctx: WeaponContext, dt: number) {
 
 function updateFlipper(bot: Bot, ctx: WeaponContext, dt: number) {
   const w = bot.weapon;
-  const T = TUNING.flipper;
+  const T = bot.def.tuning.flipper;
   if (w.flipAnim > 0) w.flipAnim = Math.max(0, w.flipAnim - dt / T.anim);
   if (bot.trigger && w.cooldown <= 0 && bot.controllable) {
     w.cooldown = T.cooldown;

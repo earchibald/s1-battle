@@ -98,9 +98,12 @@ export interface JevAnswerNoul {
 }
 export type JevAnswer = JevAnswerChoice | JevAnswerNoul;
 
+/** Body of POST /api/decide. `logic` is the bot's editable brain; the server falls back to stock logic without it. */
 export interface DecideRequest {
   kind: BotKind;
-  perception: Perception;
+  name?: string;
+  sense: unknown;
+  build?: unknown;
 }
 
 export interface DecideResponse {
@@ -131,4 +134,6 @@ export interface Intent {
   latencyMs: number;
   /** One-line rationale for the ticker. */
   note: string;
+  /** Baseline brains: id of the rule that fired, so the designer can light it up. */
+  ruleId?: string;
 }

@@ -1,61 +1,107 @@
-import type { BotDef, BotSense, Question } from "./common";
-import { anyThreat, baselineIntent, nearest, weakest } from "./common";
-import type { Maneuver } from "../types";
+import type { BotBuild } from "../build";
+import { STOCK_PROMPTS } from "./prompts";
 
 /**
  * LAUNCHER: low wedge with a pneumatic flipper plate. Gets under an opponent and throws it into
  * the air; the landing hurts, and a wall or the pit hurts more. Quick, moderate armor, long
  * recharge between flips. Wants side and rear approaches where its wedge slides underneath.
  */
-export const FLIPPER: BotDef = {
-  kind: "flipper",
+export const FLIPPER_BUILD: BotBuild = {
+  id: "stock-flipper",
   name: "LAUNCHER",
-  weapon: "pneumatic flipper wedge",
   tagline: "Everything is airborne eventually.",
+  kind: "flipper",
   color: 0xff7a1a,
   accent: 0x2a1c12,
-  stats: { hp: 350, mass: 1.15, maxSpeed: 6.6, accel: 13, turnRate: 4.3, armor: 0.12, radius: 0.9 },
-  maneuvers: {
-    engage: "Drive wedge-first under the target's front so the flipper can get beneath it.",
-    flip_now:
-      "Fire the flipper this instant. Only sensible when an opponent is touching or close and roughly dead ahead, and the flipper is charged.",
-    flank: "Get around to the target's side or rear, where the wedge slides under without taking a hit.",
-    circle: "Keep medium distance and circle while the flipper recharges or the target is dangerous.",
-    retreat: "Back away from the nearest threat. Only worth it when a ready weapon is pointed at me from close range and my flipper is recharging.",
-  },
-  available(sense) {
-    const list: Maneuver[] = ["engage", "flank", "circle", "retreat"];
-    if (sense.facts.weaponReady && sense.facts.opponents.some((o) => o.inReach)) list.unshift("flip_now");
-    return list;
-  },
-  extraQuestions(sense: BotSense): Record<string, Question> {
-    if (!sense.facts.weaponReady) return {};
-    return {
-      flip_toward_hazard: {
-        type: "noul",
-        instructions:
-          "If `me` flips the nearest opponent right now, would it be thrown toward the open pit or toward the kill saws? Yes only when a hazard is close and in roughly the same direction as that opponent.",
+  levels: { armor: 1, motor: 5, frame: 3, steering: 4, power: 3, cycle: 3 },
+  techniques: ["flip_now", "engage", "flank", "circle", "retreat"],
+  logic: {
+    targeting: { prefer: "nearest", finishBelow: 0.4, finishWithin: 3 },
+    rules: [
+      {
+        id: "flip",
+        when: [
+          { s: "me.ready", op: "is", v: true },
+          { s: "anyone.inReach", op: "is", v: true },
+        ],
+        maneuver: "flip_now",
+        target: "in_reach",
+        danger: 0.3,
+        dangerIfThreat: 0.3,
+        note: "{target} is on the plate",
       },
-    };
-  },
-  baseline(sense) {
-    const f = sense.facts;
-    const ops = f.opponents;
-    if (ops.length === 0) return baselineIntent(null, "hold", 0, "nobody left");
-    const threat = anyThreat(ops);
-    const near = nearest(ops)!;
-    const weak = weakest(ops)!;
-    const target = weak.hpFrac < 0.4 && weak.dist < near.dist + 3 ? weak : near;
-    const inReach = ops.find((o) => o.inReach && !o.airborne);
-    if (f.weaponReady && inReach) return baselineIntent(inReach.name, "flip_now", 0.3, `${inReach.name} is on the plate`);
-    if (!f.weaponReady) {
-      if (threat && threat.dist < 2.5) return baselineIntent(target.name, "retreat", 0.8, "flipper recharging, back off");
-      return baselineIntent(target.name, "circle", 0.3, "flipper recharging, circle");
-    }
-    if (target.stunned || target.airborne) return baselineIntent(target.name, "engage", 0.1, `${target.name} is helpless, close in`);
-    if (target.facingMe > 0.5 && target.weaponReady && target.kind !== "flipper") {
-      return baselineIntent(target.name, "flank", threat ? 0.5 : 0.2, `${target.name} faces me, go around`);
-    }
-    return baselineIntent(target.name, "engage", 0.1, `wedge under ${target.name}`);
+      {
+        id: "bail",
+        when: [
+          { s: "me.ready", op: "is", v: false },
+          { s: "threat.dist", op: "<", v: 2.5 },
+        ],
+        maneuver: "retreat",
+        target: "policy",
+        danger: 0.8,
+        dangerIfThreat: 0.8,
+        note: "flipper recharging, back off",
+      },
+      {
+        id: "recharge",
+        when: [{ s: "me.ready", op: "is", v: false }],
+        maneuver: "circle",
+        target: "policy",
+        danger: 0.3,
+        dangerIfThreat: 0.3,
+        note: "flipper recharging, circle",
+      },
+      {
+        id: "pounce",
+        when: [{ s: "target.helpless", op: "is", v: true }],
+        maneuver: "engage",
+        target: "policy",
+        danger: 0.1,
+        dangerIfThreat: 0.1,
+        note: "{target} is helpless, close in",
+      },
+      {
+        id: "flank",
+        when: [
+          { s: "target.facing", op: ">", v: 0.5 },
+          { s: "target.ready", op: "is", v: true },
+          { s: "target.kind", op: "not", v: "flipper" },
+        ],
+        maneuver: "flank",
+        target: "policy",
+        danger: 0.2,
+        dangerIfThreat: 0.5,
+        note: "{target} faces me, go around",
+      },
+      { id: "engage", when: [], maneuver: "engage", target: "policy", danger: 0.1, dangerIfThreat: 0.1, note: "wedge under {target}" },
+    ],
+    jev: {
+      ...STOCK_PROMPTS,
+      techniques: {
+        engage: { description: "Drive wedge-first under the target's front so the flipper can get beneath it.", when: [] },
+        flip_now: {
+          description:
+            "Fire the flipper this instant. Only sensible when an opponent is touching or close and roughly dead ahead, and the flipper is charged.",
+          when: [
+            { s: "me.ready", op: "is", v: true },
+            { s: "anyone.inReach", op: "is", v: true },
+          ],
+        },
+        flank: { description: "Get around to the target's side or rear, where the wedge slides under without taking a hit.", when: [] },
+        circle: { description: "Keep medium distance and circle while the flipper recharges or the target is dangerous.", when: [] },
+        retreat: {
+          description: "Back away from the nearest threat. Only worth it when a ready weapon is pointed at me from close range and my flipper is recharging.",
+          when: [],
+        },
+      },
+      speculative: [
+        {
+          key: "flip_toward_hazard",
+          prompt:
+            "If `me` flips the nearest opponent right now, would it be thrown toward the open pit or toward the kill saws? Yes only when a hazard is close and in roughly the same direction as that opponent.",
+          when: [{ s: "me.ready", op: "is", v: true }],
+        },
+      ],
+    },
   },
 };

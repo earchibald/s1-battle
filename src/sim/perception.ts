@@ -70,7 +70,7 @@ function myWeaponState(bot: Bot): string {
       if (w.hammerPhase === "strike" || w.hammerPhase === "recover") return "hammer down after a strike";
       return w.cooldown > 0 ? `hammer recharging (${Math.ceil(w.cooldown)}s)` : "hammer raised and ready";
     case "grabber":
-      if (bot.holding) return `jaws clamped on ${bot.holding.id}, ${Math.ceil(Math.max(0, 3.6 - w.holdTime))}s of grip left`;
+      if (bot.holding) return `jaws clamped on ${bot.holding.id}, ${Math.ceil(Math.max(0, bot.def.tuning.grabber.maxHold - w.holdTime))}s of grip left`;
       return w.cooldown > 0 ? `jaws recharging (${Math.ceil(w.cooldown)}s)` : "jaws open and ready";
     case "flipper":
       return w.cooldown > 0 ? `flipper recharging (${Math.ceil(w.cooldown)}s)` : "flipper charged and ready";

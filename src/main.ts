@@ -1,5 +1,8 @@
 import * as THREE from "three";
-import { BOT_DEFS } from "@shared/bots/index";
+import { STOCK_ORDER, stockBuild } from "@shared/bots/index";
+import type { BotBuild } from "@shared/build";
+import { cloneBuild, normalizeBuild } from "@shared/build";
+import { defFromBuild } from "@shared/logic";
 import { Brain, type BrainMode } from "./brain/brains";
 import { BotMesh } from "./render/botMesh";
 import { Effects } from "./render/effects";
@@ -10,13 +13,15 @@ import { commentate } from "./ui/commentary";
 import { Hud, maneuverLabel, type JevInfo } from "./ui/hud";
 import { Labels } from "./ui/labels";
 import { Callouts } from "./ui/callouts";
+import { Designer, uniqueNamed } from "./ui/designer";
 import { SoundEngine } from "./audio/sound";
 import { pitPhase, sawRaise } from "./sim/arena";
 import type { HammerPhase } from "./sim/bot";
 
 /**
- * S1 Arena entry point. Fixed-step simulation, async brains, Three.js rendering, HTML HUD.
- * Keyboard: Space pause · N new match · C camera · D debug · M mute · 1/2/3 speed · J/B all Jev/baseline.
+ * S1 Arena entry point. Fixed-step simulation, async brains, Three.js rendering, HTML HUD, and the Garage
+ * (designer) overlay. Keyboard: Space pause · N new match · C camera · D debug · M mute · 1/2/3 speed ·
+ * J/B all Jev/baseline · G garage.
  */
 
 const FIXED_DT = 1 / 60;
@@ -56,6 +61,68 @@ let world!: World;
 let meshes: BotMesh[] = [];
 let brains = new Map<string, Brain>();
 let debugLines: THREE.LineSegments | null = null;
+/** Roster slot index -> bot id in the current match. */
+let slotBots: string[] = [];
+
+/* ---------------------------------------------------------------- roster / garage ---------------- */
+
+const GARAGE_KEY = "s1.garage.v1";
+function loadRoster(): BotBuild[] {
+  const stock = STOCK_ORDER.map((k, i) => ({ ...stockBuild(k), id: `slot-${i}` }));
+  try {
+    const raw = localStorage.getItem(GARAGE_KEY);
+    if (!raw) return stock;
+    const parsed = JSON.parse(raw) as { builds?: unknown[] };
+    if (!Array.isArray(parsed.builds)) return stock;
+    return stock.map((s, i) => (parsed.builds![i] ? normalizeBuild(parsed.builds![i], stockBuild, `slot-${i}`) : s));
+  } catch {
+    return stock;
+  }
+}
+function saveRoster(builds: BotBuild[]) {
+  try {
+    localStorage.setItem(GARAGE_KEY, JSON.stringify({ version: 1, builds }));
+  } catch {
+    /* private mode etc.: the roster just lives for this session */
+  }
+}
+const roster = loadRoster();
+
+let toastEl: HTMLElement | null = null;
+let toastTimer = 0;
+function toast(text: string) {
+  if (!toastEl) {
+    toastEl = document.createElement("div");
+    toastEl.className = "dz-toast";
+    document.body.appendChild(toastEl);
+  }
+  toastEl.textContent = text;
+  toastEl.style.display = "";
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
+    if (toastEl) toastEl.style.display = "none";
+  }, 3200);
+}
+
+const designer = new Designer(document.getElementById("designer")!, roster, {
+  deploy: () => {
+    startMatch();
+    toast(`Deployed: ${roster.map((b) => b.name).join(" · ")}`);
+  },
+  applyLive(slot, build) {
+    const bot = world?.bot(slotBots[slot]);
+    if (!bot) return;
+    // Brain-only changes: the running bot's def closes over its own build object, so copy into it.
+    const copy = cloneBuild(build);
+    bot.def.build.logic = copy.logic;
+    bot.def.build.techniques = copy.techniques;
+  },
+  botForSlot: (slot) => world?.bot(slotBots[slot]),
+  brainForSlot: (slot) => brains.get(slotBots[slot]),
+  world: () => world,
+  onChange: saveRoster,
+  toast,
+});
 
 const hud = new Hud(document.getElementById("hud")!, {
   toggleBrain(id) {
@@ -92,6 +159,10 @@ const hud = new Hud(document.getElementById("hud")!, {
     sound.setMuted(!sound.muted);
     syncControls();
   },
+  toggleDesigner() {
+    sound.uiClick();
+    designer.toggle();
+  },
 });
 function syncControls() {
   hud.setControls(paused, speed, scene.autoCamera, debug, sound.muted);
@@ -109,12 +180,16 @@ function startMatch() {
   lastReady.clear();
   hud.hideResult();
 
+  // Each slot gets its own copy of the build so garage edits only reach the arena on deploy (or live-apply).
+  const defs = roster.map((b) => defFromBuild(uniqueNamed(cloneBuild(b), roster)));
   // Rotate start corners each match so nobody always spawns next to the pit.
-  const defs = Object.values(BOT_DEFS);
-  const lineup = defs.map((_, i) => defs[(i + lineupRotation) % defs.length]);
+  const order = defs.map((_, i) => (i + lineupRotation) % defs.length);
+  const lineup = order.map((i) => defs[i]);
   lineupRotation++;
   world = new World(lineup, Date.now() % 100000);
   world.matchNumber = matchNumber++;
+  slotBots = [];
+  order.forEach((slot, pos) => (slotBots[slot] = world.bots[pos].id));
   for (const bot of world.bots) {
     const mesh = new BotMesh(bot);
     scene.scene.add(mesh.group);
@@ -334,8 +409,17 @@ async function pollJev() {
 }
 
 window.addEventListener("keydown", (ev) => {
-  if (ev.target instanceof HTMLInputElement) return;
+  const t = ev.target;
+  if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
+  if (designer.open) {
+    if (ev.key === "Escape" || ev.key === "g" || ev.key === "G") designer.hide();
+    return;
+  }
   switch (ev.key) {
+    case "g":
+    case "G":
+      designer.show();
+      break;
     case " ":
       ev.preventDefault();
       paused = !paused;
@@ -419,6 +503,7 @@ function frame(now: number) {
   callouts.update(realDt);
   updateAudio();
   updateDebug();
+  designer.tick(realDt);
   hud.update(world, brains);
   if (world.phase === "ended" && endedAt !== null) {
     const elapsed = (performance.now() - endedAt) / 1000;
@@ -432,7 +517,7 @@ startMatch();
 syncControls();
 // Debug handle for the console: window.__s1.world, .sound, .brains
 Object.assign(window as unknown as Record<string, unknown>, {
-  __s1: { get world() { return world; }, get brains() { return brains; }, sound, scene, effects },
+  __s1: { get world() { return world; }, get brains() { return brains; }, sound, scene, effects, designer, roster },
 });
 void pollJev();
 setInterval(() => void pollJev(), 2500);

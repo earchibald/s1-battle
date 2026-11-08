@@ -49,6 +49,12 @@ export class Labels {
   }
 
   update(bots: Bot[], dt: number, now: number) {
+    for (const [id, t] of this.tags) {
+      if (!bots.some((b) => b.id === id)) {
+        t.root.remove();
+        this.tags.delete(id);
+      }
+    }
     for (const b of bots) {
       this.ensure(b);
       const t = this.tags.get(b.id)!;

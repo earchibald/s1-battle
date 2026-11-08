@@ -19,14 +19,14 @@ app.get("/api/stats", (_req, res) => {
   res.json(getStats());
 });
 
-/** One bot, one moment, one Jev request. Body: { kind, sense: { perception, facts } }. */
+/** One bot, one moment, one Jev request. Body: { kind, sense: { perception, facts }, build? }. */
 app.post("/api/decide", async (req, res) => {
-  const body = req.body as { kind?: BotKind; sense?: BotSense };
+  const body = req.body as { kind?: BotKind; sense?: BotSense; build?: unknown };
   if (!body?.kind || !BOT_KINDS.includes(body.kind) || !body.sense?.perception || !body.sense?.facts) {
-    res.status(400).json({ ok: false, error: "expected { kind, sense: { perception, facts } }" });
+    res.status(400).json({ ok: false, error: "expected { kind, sense: { perception, facts }, build? }" });
     return;
   }
-  const result = await decide(body.kind, body.sense);
+  const result = await decide(body.kind, body.sense, body.build);
   res.status(result.ok ? 200 : (result.status ?? 502)).json(result);
 });
 

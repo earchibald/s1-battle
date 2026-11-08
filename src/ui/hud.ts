@@ -13,6 +13,7 @@ export interface HudCallbacks {
   toggleCamera(): void;
   toggleDebug(): void;
   toggleSound(): void;
+  toggleDesigner(): void;
 }
 
 export interface JevInfo {
@@ -25,7 +26,7 @@ export interface JevInfo {
   inputTokens?: number;
 }
 
-const WEAPON_ICON: Record<string, string> = {
+export const WEAPON_ICON: Record<string, string> = {
   saw: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1" stroke="currentColor" stroke-width="2"/></svg>`,
   hammer: `<svg viewBox="0 0 24 24"><path d="M4 20l8-8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><rect x="11" y="3" width="10" height="7" rx="1.5" transform="rotate(45 16 6.5)" fill="currentColor"/></svg>`,
   grabber: `<svg viewBox="0 0 24 24"><path d="M6 4c-3 4-3 9 0 13M18 4c3 4 3 9 0 13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M12 10v10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>`,
@@ -93,6 +94,7 @@ export class Hud {
         <button data-k="debug" title="D">◎ Debug</button>
         <button data-k="sound" title="M">🔊</button>
         <div class="seg"><button data-k="alljev">All Jev</button><button data-k="allbase">All Baseline</button></div>
+        <button data-k="garage" class="garage" title="G">🛠 Garage</button>
         <button data-k="new" class="primary" title="N">⟳ New match</button>
       </div>
       <div class="hud-result hidden" id="hud-result"></div>
@@ -118,6 +120,7 @@ export class Hud {
     this.controls.alljev.onclick = () => cb.setAllBrains("jev");
     this.controls.allbase.onclick = () => cb.setAllBrains("baseline");
     this.controls.new.onclick = () => cb.newMatch();
+    this.controls.garage.onclick = () => cb.toggleDesigner();
   }
 
   private card(bot: Bot): Card {
@@ -129,7 +132,7 @@ export class Hud {
     root.innerHTML = `
       <div class="card-head">
         <span class="card-icon">${WEAPON_ICON[bot.kind]}</span>
-        <div class="card-title"><div class="card-name">${bot.id}</div><div class="card-weapon">${bot.def.weapon}</div></div>
+        <div class="card-title"><div class="card-name">${bot.id}</div><div class="card-weapon">${bot.def.weapon} · ${bot.def.build.levels.armor ? bot.def.build.levels.armor * 9 + "% armor" : "no armor"}</div></div>
         <button class="brain-toggle" title="Toggle this bot's brain"></button>
       </div>
       <div class="bar hp"><div class="fill"></div><span class="bar-text"></span></div>
@@ -222,6 +225,13 @@ export class Hud {
       <div class="hz ${pit}">PIT ${pit === "open" ? "OPEN" : pit === "warning" ? "OPENING" : `in ${Math.ceil(pc)}s`}</div>
       <div class="hz saws-${saws}">SAWS ${saws === "up" ? "UP" : saws === "rising" ? "RISING" : "down"}</div>`;
 
+    // Rosters change between matches now, so drop cards for bots that are not in this one.
+    for (const [id, c] of this.cards) {
+      if (!world.bots.some((b) => b.id === id)) {
+        c.root.remove();
+        this.cards.delete(id);
+      }
+    }
     for (const bot of world.bots) {
       const c = this.card(bot);
       const brain = brains.get(bot.id);
@@ -282,7 +292,7 @@ function statusLine(bot: Bot): string {
   if (bot.airborne) return "AIRBORNE";
   if (bot.heldBy) return `held by ${bot.heldBy.id}`;
   if (bot.stun > 0) return "stunned";
-  if (bot.holding) return `holding ${bot.holding.id} (${Math.max(0, 3.6 - bot.weapon.holdTime).toFixed(1)}s)`;
+  if (bot.holding) return `holding ${bot.holding.id} (${Math.max(0, bot.def.tuning.grabber.maxHold - bot.weapon.holdTime).toFixed(1)}s)`;
   switch (bot.kind) {
     case "saw":
       return `blade ${(bot.weapon.spin * 100).toFixed(0)}%`;

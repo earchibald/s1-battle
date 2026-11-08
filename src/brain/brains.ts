@@ -1,5 +1,5 @@
 import type { BotSense } from "@shared/bots/common";
-import { interpretAnswers } from "@shared/bots/common";
+import { interpretAnswers } from "@shared/logic";
 import type { DecideError, DecideResponse, Intent } from "@shared/types";
 import type { Bot } from "../sim/bot";
 import type { SimEvent } from "../sim/events";
@@ -97,7 +97,8 @@ export class Brain {
       const res = await fetch(this.opts.decideUrl, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ kind: this.bot.kind, sense: s }),
+        // The bot's editable brain rides along: the server is stateless and builds the questions from it.
+        body: JSON.stringify({ kind: this.bot.kind, sense: s, build: this.bot.def.build }),
       });
       const data = (await res.json()) as DecideResponse | DecideError;
       if (!data.ok) throw new Error(data.error);
@@ -113,7 +114,7 @@ export class Brain {
         return;
       }
       const fresh = sense(this.bot, world.bots, world.fightTime, world.timeLeft);
-      this.apply(interpretAnswers(this.bot.def, fresh, data.answers, data.latencyMs), emit);
+      this.apply(interpretAnswers(this.bot.def.build, fresh, data.answers, data.latencyMs), emit);
     } catch (err) {
       this.status.fallbacks++;
       this.status.lastError = err instanceof Error ? err.message : String(err);
