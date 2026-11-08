@@ -1,0 +1,11 @@
+Create an arena for bots to battle in based on usage of Jev classifier decisions to take action.
+
+Jev is fast enough for this to be realtime!
+
+Make 4 different kinds of bots with different characteristics, each with baseline logic and jev decision tree implementations based on their individual capabilities.
+
+Jev key in .env file.
+
+Attractive, modern 3d or attractive isometric 2D graphics that accurately display the individual mechanical characteristics of each bot's capabitilities (saw blade, hammer, grabbing arm, -- think robot arena battles!)
+
+Make it go! Give me a kickass base to continue working off of. It should be fun to watch with each match lasting from 30-240 seconds or so.
