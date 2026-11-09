@@ -5,8 +5,11 @@ times a second, every bot sends a plain-English description of what it can see t
 decision — who to target, which maneuver to run, and a probability that it is about to be hit. Code turns
 that decision into motor and weapon commands at 60 Hz.
 
-Jev answers in ~80–150 ms, so the whole thing runs in realtime. Every bot can be flipped between its **Jev
-brain** and a scripted **baseline brain** live, so you can watch the difference.
+Jev answers in ~80–150 ms, so the whole thing runs in realtime. Every bot can be flipped live between three
+brains: **Jev**, a scripted **baseline** rule tree, and a **trained** brain: a ~87k-weight network trained on
+this machine from the simulator itself, running in the browser in ~0.2 ms per decision. Its personality (aggression,
+caution, showboating, hazard play...) is a set of Garage sliders that take effect without retraining. See
+[docs/trained-brain.md](docs/trained-brain.md).
 
 ```
 npm install
@@ -14,7 +17,9 @@ cp .env.example .env     # put your TYPESAFE_API_KEY in .env
 npm run dev              # server on :8787, client on :5173
 ```
 
-Open http://localhost:5173. Without an API key the arena still runs on baseline brains.
+Open http://localhost:5173. Without an API key the arena runs on the trained brain (local, free), or on the
+baseline trees if you prefer. To run a second checkout beside a running one: `PORT=8797 npx tsx server/index.ts` and
+`API_PORT=8797 npx vite --port 5199`.
 
 ## The bots
 
@@ -110,6 +115,12 @@ apples-to-apples comparison. Both brains are data (`shared/build.ts` `BotLogic`)
 `shared/logic.ts`; the four stock bots in `shared/bots/*.ts` are builds like any the Garage produces. If a Jev
 call fails or times out, the bot falls back to its baseline for that decision and the HUD says so.
 
+The **trained brain** skips the server entirely: `src/brain/trained/` encodes the moment as numbers
+(`src/sim/features.ts`), runs the network in plain TypeScript, and weighs its six predicted outcomes per
+(technique, target) with the bot's style. It is limited by the same technique gates as Jev and decides at the
+same Sensors cadence. It was trained from counterfactual rollouts: the headless sim forks a decision once per
+option and plays each one out (`scripts/train/`).
+
 ## Layout
 
 ```
@@ -117,17 +128,19 @@ shared/      types; build.ts (builds, parts, costs, derived stats, condition lan
              logic.ts (rule-tree interpreter, Jev gates/questions); bots/ (the seven stock builds). Browser + server.
 server/      Express: /api/decide proxies Jev (key stays server-side), /api/health, /api/stats
 src/sim/     deterministic simulation: physics, weapons, hazards, perception, controller, match rules, quicksim
-src/brain/   decision scheduler (cadence, event nudges, stale-answer guard, fallback)
+src/brain/   decision scheduler (cadence, event nudges, stale-answer guard, fallback); trained/ (network + style policy)
 src/render/  Three.js arena, procedural bot models (armor plates, wheel size and rig scale follow the build)
 src/ui/      HUD cards, ticker/commentary, labels, comic callouts, result screen, designer.ts (the Garage), library.ts
 src/audio/   procedural Web Audio sound engine (no asset files)
 scripts/     probe-jev.ts (latency check), headless.ts (tournaments; stock kinds or a garage export), balance.ts (win share sweep)
+             train/ (rollout data generation, PyTorch training, parity/fork checks, brain-vs-brain tournaments)
+public/models/trained-brain.json   the shipped trained-brain weights (float16, ~230 KB)
 ```
 
 ## Controls
 
 Space pause · N new match · G garage · C auto/free camera · D debug nav lines · M mute · 1/2/3 speed ·
-J all Jev · B all baseline. Click a bot card's brain badge to switch just that bot.
+J all Jev · T all trained · B all baseline. Click a bot card's brain badge to cycle that bot Jev → Trained → Baseline.
 
 ## Tuning and extending
 
@@ -147,5 +160,8 @@ J all Jev · B all baseline. Click a bot card's brain badge to switch just that 
 - Add a weapon system: new entry in `WEAPONS`, a stock build in `shared/bots/`, a weapon branch in
   `src/sim/weapons.ts` and a model in `src/render/botMesh.ts`.
 
-Ideas queued: Jev vs. baseline tournament mode with win-rate tracking, 1v1 brackets, a Jev "color commentator"
+- Brain vs brain: `npx tsx scripts/train/tournament.ts --matches 400` (trained vs baseline; `--vs trained --style
+  berserker` for personality A/B, `--vs jev` with an API key). Retraining is in docs/trained-brain.md.
+
+Ideas queued: 1v1 brackets, Garage model adapters for the trained brain, a Jev "color commentator"
 (Score questions on excitement/momentum), team battles, replay export.
