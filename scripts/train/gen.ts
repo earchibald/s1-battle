@@ -9,7 +9,8 @@
  * --matches is per worker. Options: --seed 1 · --label 0.5 (fraction of decisions rolled out) · --eps 0.15
  * (random exploratory choices on the real trajectory) · --commit 1.0 · --horizon 2.5 · --model-share 0.7
  * (bots driven by the model when --model is given; the rest use their baseline trees, and rollout
- * continuations do the same).
+ * continuations do the same) · --focus data/league/focus-g3.json (weapon weights for roster sampling, written by
+ * the league's diagnosis so the data oversamples the champion's weak spots).
  *
  * Output: data/<name>/shard-<i>.f32 (rows in the layout of scripts/train/spec.ts) and data/<name>/meta.json.
  */
@@ -45,6 +46,8 @@ const horizon = Number(opt("horizon", "2.5"));
 const modelPath = opt("model", "");
 const modelShare = Number(opt("model-share", "0.7"));
 const dir = `data/${name}`;
+const focusPath = opt("focus", "");
+const focus = focusPath ? (JSON.parse(readFileSync(focusPath, "utf8")) as { kinds: Record<string, number> }).kinds : undefined;
 const HOLDING: Maneuver[] = ["crush", "drag_to_pit", "drag_to_saws", "release"];
 
 function generate(): { rows: number; rollouts: number } {
@@ -57,7 +60,7 @@ function generate(): { rows: number; rollouts: number } {
 
   for (let m = 0; m < matches; m++) {
     const seed = seed0 * 100000 + shard * 1000 + m;
-    const roster = randomRoster(rng).map(defFromBuild);
+    const roster = randomRoster(rng, focus).map(defFromBuild);
     // Which brain each bot plays with, on the real trajectory and in every rollout continuation.
     const usesModel = new Map<string, boolean>(roster.map((d) => [d.name, !!greedyModel && rng.next() < modelShare]));
     const continuation = (b: Bot): Policy => (usesModel.get(b.id) ? greedyModel! : baselinePolicy);
@@ -141,7 +144,7 @@ if (!isMainThread) {
   }
   const total = results.reduce((a, r) => a + r.rows, 0);
   const shards = results.map((r, i) => ({ file: `shard-${i}.f32`, rows: r.rows }));
-  writeFileSync(`${dir}/meta.json`, JSON.stringify(meta({ name, shards, rows: total, args: argv, model: modelPath || null }), null, 1));
+  writeFileSync(`${dir}/meta.json`, JSON.stringify(meta({ name, shards, rows: total, args: argv, model: modelPath || null, focus: focus ?? null }), null, 1));
   const ro = results.reduce((a, r) => a + r.rollouts, 0);
   console.log(`${total} rows, ${ro} rollouts, ${shards.length} shards → ${dir} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
   process.exit(0);

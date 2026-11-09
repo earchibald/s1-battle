@@ -147,6 +147,12 @@ the behaviour *and* continuation brain for most bots when generating the next da
 | iteration 1 | + 281k moments, iteration-0 brain in the loop | 69.3% / 64.0% | 50.2% / 54.0% vs iteration 0 |
 | **iteration 2 (shipped)** | + 279k moments, iteration-1 brain in the loop | **70.0% / 67.3%** | 53.3% / 52.5% vs iteration 1; 56.8% vs iteration 0 |
 
+These head-to-head numbers came from 400-match runs (±17 Elo at 95%). Re-measured later in the league with
+3,000 side-swapped pairs each on mixed builds, both rounds helped, but the sizes were the other way round:
+iteration 1 vs 0 **+22.5 Elo** [15.3, 29.7], iteration 2 vs 1 **+9.7 Elo** [2.8, 16.7]. Ladder vs baseline: 0 → +96,
+1 → +112, 2 → +125 Elo. From here on, improvement runs through the automated, SPRT-gated loop in
+[improvement-loop.md](improvement-loop.md).
+
 Cost of each round on the M5 Max: ~6 min (iteration 0) or ~16 min (with the network in every rollout) of data
 generation on 14–16 cores, plus ~40–60 s of training. Each iteration's gain is a few points; a third round
 is cheap if wanted.
@@ -165,6 +171,10 @@ is cheap if wanted.
   Style lives in the build (`logic.trained`), so it saves to the library, exports, and applies live.
 
 ## Retraining
+
+For repeated improvement, use the league loop (`scripts/league/loop.sh`, see [improvement-loop.md](improvement-loop.md)):
+it runs these steps, gates every new model with a sequential test against the champion, and keeps an Elo ladder.
+The manual recipe:
 
 ```bash
 # 1. data (≈6 min on 16 workers; ~300k labelled moments, ~700 MB, gitignored)

@@ -9,7 +9,8 @@ Jev answers in ~80–150 ms, so the whole thing runs in realtime. Every bot can 
 brains: **Jev**, a scripted **baseline** rule tree, and a **trained** brain: a ~87k-weight network trained on
 this machine from the simulator itself, running in the browser in ~0.2 ms per decision. Its personality (aggression,
 caution, showboating, hazard play...) is a set of Garage sliders that take effect without retraining. See
-[docs/trained-brain.md](docs/trained-brain.md).
+[docs/trained-brain.md](docs/trained-brain.md). It improves itself through an SPRT-gated champion/challenger
+league with an Elo ladder: [docs/improvement-loop.md](docs/improvement-loop.md).
 
 ```
 npm install
@@ -134,6 +135,7 @@ src/ui/      HUD cards, ticker/commentary, labels, comic callouts, result screen
 src/audio/   procedural Web Audio sound engine (no asset files)
 scripts/     probe-jev.ts (latency check), headless.ts (tournaments; stock kinds or a garage export), balance.ts (win share sweep)
              train/ (rollout data generation, PyTorch training, parity/fork checks, brain-vs-brain tournaments)
+             league/ (improvement loop: paired matches, SPRT promotion gate, Bradley–Terry ladder, curriculum)
 public/models/trained-brain.json   the shipped trained-brain weights (float16, ~230 KB)
 ```
 

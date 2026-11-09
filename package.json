@@ -11,7 +11,9 @@
     "build": "vite build",
     "start": "NODE_ENV=production tsx server/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "probe": "tsx scripts/probe-jev.ts"
+    "probe": "tsx scripts/probe-jev.ts",
+    "league": "tsx scripts/league/league.ts",
+    "improve": "scripts/league/loop.sh"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.7.0",
