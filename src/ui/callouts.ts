@@ -20,6 +20,8 @@ const WORDS: Record<CalloutKind, readonly string[]> = {
   spinner: ["WHANG!", "SMACK!"],
   torch: ["FWOOSH!", "TOAST!"],
   ram: ["WHUMP!", "SLAM!"],
+  vent: ["FWOOSH!"],
+  shock: ["ZAP!"],
   pitted: ["PITTED!"],
   destroyed: ["K.O.!"],
 };

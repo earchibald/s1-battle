@@ -1,6 +1,6 @@
 import type { BotSense, Facts, OpponentFacts } from "@shared/bots/common";
 import type { Bearing, DistanceBucket, FacingMe, HealthBucket, OpponentView, Perception, TimeLeft } from "@shared/types";
-import { ARENA, insidePit, nearestSawSlot, pitPhase, sawPhase } from "./arena";
+import { ARENA, TRAP_NAMES, insidePit, liveTraps, nearestLiveTrap, nearestSawSlot, padPhase, pitPhase, sawPhase, shockPhase, trapGap, ventSweep, ventsPhase } from "./arena";
 import type { Bot } from "./bot";
 import { angleOf, dist, dot, fromAngle, norm, sub, wrap } from "./math";
 
@@ -91,6 +91,13 @@ function myWeaponState(bot: Bot): string {
       return "boost reserve low, refilling";
   }
 }
+/** ", standing on a shock plate that is about to fire" when it is, so Jev can dodge it or exploit it. */
+function trapWords(bot: Bot, t: number): string {
+  if (!bot.alive || bot.airborne) return "";
+  const z = liveTraps(t).find((z) => trapGap(bot.p, z) < bot.radius * 0.3);
+  if (!z) return "";
+  return `, standing on a ${TRAP_NAMES[z.kind]} that is ${z.phase === "active" ? "firing" : "about to fire"}`;
+}
 function statusWords(bot: Bot): string {
   if (!bot.alive) return bot.eliminated === "pitted" ? "gone, fell in the pit" : "destroyed";
   const fire = bot.burn > 0 ? ", on fire" : "";
@@ -136,7 +143,7 @@ function threatRange(o: Bot, me: Bot): number {
   return base + me.def.stats.awareness;
 }
 
-function opponentFacts(me: Bot, o: Bot): OpponentFacts {
+function opponentFacts(me: Bot, o: Bot, time: number): OpponentFacts {
   const to = sub(o.p, me.p);
   const d = dist(me.p, o.p);
   const relBearing = wrap(angleOf(to) - me.heading);
@@ -156,6 +163,7 @@ function opponentFacts(me: Bot, o: Bot): OpponentFacts {
     burning: o.burn > 0,
     inReach: inReachOf(me, o),
     threatening: o.weaponReady && facingMe > 0.7 && gap < threatRange(o, me) && o.controllable,
+    trapDist: nearestLiveTrap(o.p, time)?.d ?? 99,
   };
 }
 
@@ -171,6 +179,14 @@ function hazardWords(me: Bot, t: number): string {
   const slot = nearestSawSlot(me.p);
   const rel = wrap(angleOf(sub(slot.center, me.p)) - me.heading);
   parts.push(`the nearest kill saw slot (${saws === "down" ? "retracted" : saws === "rising" ? "about to rise" : "up and spinning"}) is ${distanceWords(slot.d - 1)}, ${bearingBucket(rel)}`);
+  // Traps only get a mention while they are telegraphing or firing, and only when they are near enough to matter.
+  const trap = nearestLiveTrap(me.p, t);
+  if (trap && trap.d < 6) {
+    const z = trap.zone;
+    const trel = wrap(angleOf(sub(z.center, me.p)) - me.heading);
+    const where = trap.d < 0.2 ? "under me" : `${distanceWords(trap.d)}, ${bearingBucket(trel)}`;
+    parts.push(`a ${TRAP_NAMES[z.kind]} (${z.phase === "active" ? "firing" : "about to fire"}) is ${where}`);
+  }
   return parts.join("; ");
 }
 
@@ -190,8 +206,10 @@ export function sense(me: Bot, bots: Bot[], time: number, timeLeft: number): Bot
     sawsUp: sawPhase(time) === "up",
     sawsSoon: sawPhase(time) === "rising",
     sawsDist: nearestSawSlot(me.p).d,
+    trapLive: liveTraps(time).length > 0,
+    trapDist: nearestLiveTrap(me.p, time)?.d ?? 99,
     timeLeft,
-    opponents: opponents.map((o) => opponentFacts(me, o)),
+    opponents: opponents.map((o) => opponentFacts(me, o, time)),
   };
 
   const views: OpponentView[] = facts.opponents.map((f, i) => {
@@ -203,13 +221,15 @@ export function sense(me: Bot, bots: Bot[], time: number, timeLeft: number): Bot
       distance: distanceBucket(f.dist),
       bearing: bearingBucket(f.relBearing),
       facing_me: facingBucket(f.facingMe),
-      status: statusWords(o),
+      status: statusWords(o) + trapWords(o, time),
       weapon_state: theirWeaponState(o),
     };
   });
 
   const pit = pitPhase(time);
   const saws = sawPhase(time);
+  const vents = ventsPhase(time);
+  const chargingPlate = ARENA.shock.plates.findIndex((_, i) => shockPhase(i, time) !== "idle");
   const perception: Perception = {
     me: {
       name: me.id,
@@ -217,7 +237,7 @@ export function sense(me: Bot, bots: Bot[], time: number, timeLeft: number): Bot
       health: healthBucket(me.hpFrac),
       weapon_state: myWeaponState(me),
       position: zone(me),
-      status: statusWords(me),
+      status: statusWords(me) + trapWords(me, time),
       nearest_hazard: hazardWords(me, time),
       ...(me.holding ? { holding: me.holding.id, held_bot_is_over_pit: insidePit(me.holding.p) ? "yes" : "no" } : {}),
     },
@@ -225,6 +245,13 @@ export function sense(me: Bot, bots: Bot[], time: number, timeLeft: number): Bot
     arena: {
       pit: pit === "open" ? "open: any bot that drives or is dragged into it is eliminated" : pit === "warning" ? "about to open" : "closed",
       kill_saws: saws === "up" ? "up and spinning" : saws === "rising" ? "about to rise" : "retracted",
+      flame_vents:
+        vents === "idle"
+          ? "quiet"
+          : `row of floor vents south of center ${vents === "erupting" ? "erupting" : "about to erupt"} one after another, ${ventSweep(time)}: a bot on a lit vent burns and catches fire`,
+      launch_pad: padPhase(time) === "charging" ? "charging, north of center: about to throw any bot standing on it north toward the pit" : "idle",
+      shock_plates:
+        chargingPlate < 0 ? "idle" : `${chargingPlate === 0 ? "north-west" : "north-east"} plate beside the pit is about to discharge: any bot on it is stunned and helpless for a moment`,
       time_left: timeLeftBucket(timeLeft),
     },
   };

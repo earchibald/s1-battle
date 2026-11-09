@@ -444,6 +444,41 @@ export class SoundEngine {
     this.tone(120, 0.9, { type: "sawtooth", freqEnd: 420, gain: 0.08, attack: 0.1 });
   }
 
+  /** Flame vent: a gas whoosh that opens up into a roar. */
+  ventErupt() {
+    if (!this.gate("vent", 0.2)) return;
+    this.noise(1.1, { type: "bandpass", freq: 500, freqEnd: 1600, q: 0.7, gain: 0.3, attack: 0.06 });
+    this.tone(70, 0.5, { freqEnd: 45, gain: 0.18, attack: 0.03 });
+  }
+
+  /** Launch pad charging: a rising pneumatic hiss with a pressure tone under it. */
+  padCharge() {
+    this.noise(1.5, { type: "bandpass", freq: 900, freqEnd: 4500, q: 2.5, gain: 0.13, attack: 0.3 });
+    this.tone(180, 1.5, { type: "triangle", freqEnd: 520, gain: 0.07, attack: 0.3 });
+  }
+
+  /** Launch pad firing: valve crack and a floor thump; louder when it actually throws somebody. */
+  padFire(caught: boolean) {
+    this.noise(0.25, { type: "bandpass", freq: 4500, freqEnd: 600, q: 1.2, gain: caught ? 0.7 : 0.35, attack: 0.001 });
+    this.tone(95, 0.3, { freqEnd: 40, gain: caught ? 0.6 : 0.3 });
+    this.clang(310, 0.4, caught ? 0.2 : 0.1);
+    if (caught) this.noise(0.7, { type: "bandpass", freq: 350, freqEnd: 2400, q: 1.5, gain: 0.22, attack: 0.08 });
+  }
+
+  /** Shock plate charging: a mains buzz winding up. */
+  shockCharge() {
+    this.tone(100, 1.9, { type: "sawtooth", freqEnd: 240, gain: 0.07, attack: 0.4 });
+    this.tone(1200, 1.9, { type: "square", freqEnd: 3600, gain: 0.018, attack: 0.6 });
+  }
+
+  /** Shock plate discharge: a crackling zap. */
+  shockFire(caught: boolean) {
+    const g = caught ? 1 : 0.55;
+    this.noise(0.35, { type: "highpass", freq: 3500, gain: 0.45 * g, attack: 0.001 });
+    for (let i = 0; i < 5; i++) this.tone(900 + Math.random() * 2600, 0.06, { type: "square", gain: 0.07 * g, delay: i * 0.045 });
+    this.tone(120, 0.35, { type: "sawtooth", freqEnd: 50, gain: 0.22 * g });
+  }
+
   countdownBeep(final: boolean) {
     this.tone(final ? 1320 : 880, final ? 0.6 : 0.12, { type: "square", gain: 0.12 });
     if (final) this.crowdReact(0.7);

@@ -32,6 +32,9 @@ export function commentate(e: SimEvent, world: World): { text: string; cls: stri
         case "torch":
           if (e.power < 0.3) return null;
           return { text: pick([`${e.attacker} lights up ${e.victim}! ${n} and it's still burning.`, `${e.victim} is on fire courtesy of ${e.attacker}. ${n} damage.`]), cls: "hit" };
+        case "vent":
+        case "shock":
+          return null; // the "trapped" event speaks for these
         case "ram":
           return { text: pick([`${e.attacker} slams into ${e.victim} for ${n}!`, `${e.victim} gets bulldozed by ${e.attacker}. ${n} damage.`]), cls: "hit" };
       }
@@ -61,6 +64,12 @@ export function commentate(e: SimEvent, world: World): { text: string; cls: stri
       return { text: "THE PIT IS OPEN.", cls: "hazard" };
     case "saws_rising":
       return { text: "Kill saws rising!", cls: "hazard" };
+    case "trapped": {
+      const credit = e.by ? ` ${e.by} put it there.` : "";
+      if (e.trap === "vent") return { text: pick([`${e.bot} is caught on a flame vent!${credit}`, `The vents light up ${e.bot}!${credit}`]), cls: "hazard" };
+      if (e.trap === "pad") return { text: pick([`The launch pad throws ${e.bot} at the pit!${credit}`, `${e.bot} rides the launch pad north!${credit}`]), cls: "hazard" };
+      return { text: pick([`ZAP! ${e.bot} is stunned on the shock plate.${credit}`, `${e.bot} takes the full discharge and stops dead.${credit}`]), cls: "hazard" };
+    }
     case "match_end":
       if (!e.winner) return { text: "Nobody survives. It's a draw.", cls: "big" };
       return { text: e.reason === "judges" ? `Time! The judges give it to ${e.winner}.` : `${e.winner} WINS!`, cls: "big" };

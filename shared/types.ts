@@ -62,6 +62,9 @@ export interface Perception {
   arena: {
     pit: string;
     kill_saws: string;
+    flame_vents: string;
+    launch_pad: string;
+    shock_plates: string;
     time_left: TimeLeft;
   };
 }

@@ -39,6 +39,27 @@ slot, so two saws or four rams is a legal line-up.
 Arena hazards: a **pit** that opens on a cycle (first at 30 s, 12 s open / 18 s closed) and two **kill saw**
 slots that rise every 10 s. Walls hurt at speed, especially when you arrive airborne.
 
+Three **traps** run on their own clocks, and each one telegraphs before it fires:
+
+- **Flame vents**: a row of five floor nozzles south of center. Every 11 s they erupt one after another, sweeping
+  west to east and back on alternate cycles; each ring blinks for a second before its flame stands up for 1.2 s.
+  A bot on a lit vent takes fire damage and keeps burning afterwards. The sweep is a moving wall: time the gap,
+  or pin somebody in its path.
+- **Launch pad**: a pneumatic tile just north of center with chevrons pointing at the pit. Every 9 s it charges
+  for 1.6 s and then kicks whatever is standing on it into the air, northward. With the pit open a light bot
+  thrown from the far half of the pad lands in the hole; with it closed the landing still hurts.
+- **Shock plates**: two electrified panels either side of the pit approach. They take turns (one discharge every
+  7 s, west first at 16 s), arcing for 2 s before the pulse. A bot caught on the plate takes a little damage and
+  is stunned, which is an open invitation to a hammer (stunned targets are critical), a shove into the pit, or
+  a grab.
+
+Bots steer around a trap that is charging and drive off one that lights up under them. They can also use them:
+CLAMP's `drag_to_saws` and DOZER's `shove_to_saws` pick a live trap over the saw slots when one is closer to the
+victim, the stock rule trees have a `trap` rule for it, flips and spinner hits throw bots onto them, and Jev reads
+each trap's state and who is standing on one. Damage a trap does is credited to whoever held or hit the victim in
+the last 3 s. The trained brain's inputs predate the traps: it does not see their timers (its features are
+unchanged), it only benefits from the controller's avoidance.
+
 **Critical hits** are earned, not rolled (plus a small random chance): a saw bite from *behind*, a hammer on a
 bot that is stunned / airborne / held, a flip that sends a bot toward a wall, a crit flip's landing, a wall hit
 while airborne, a crush from a rear grab, a spinner hit on a bot *closing* on the bar, flame on a bot's back, and
@@ -46,8 +67,9 @@ a ram slam that pins a bot against the wall. Crits do 1.75× damage, chime, flas
 and buy a beat of slow motion. This is what makes Jev's `flank` decision worth choosing.
 
 **Sound** is entirely synthesized with Web Audio (`src/audio/sound.ts`): saw whine tracks blade spin, hammer
-thuds, pneumatic flips, metallic wall clangs, a pit klaxon, a crowd that swells on big moments, and a slide
-whistle for anyone who goes down the pit. Click anywhere once to unlock audio; `M` or the 🔊 button mutes.
+thuds, pneumatic flips, metallic wall clangs, a pit klaxon, a vent roar, the launch pad's hiss and thump, a
+shock plate's buzz and zap, a crowd that swells on big moments, and a slide whistle for anyone who goes down
+the pit. Click anywhere once to unlock audio; `M` or the 🔊 button mutes.
 
 **Callouts** (`src/ui/callouts.ts`, rules in `src/ui/calloutPolicy.ts`): a comic-book "K.O.!" / "WHAM!" burst with
 a plain caption ("RIPSAW shreds CLAMP · 24"), reserved for eliminations, critical hits of 20+ and hits of 30+, with
@@ -84,8 +106,8 @@ change end to end, with a live 3D turntable of the result:
   deploy.
 - **Baseline brain.** The scripted decision tree, fully editable: a targeting policy plus ordered
   `IF conditions THEN maneuver` rules over a small condition vocabulary (my health, target distance, target
-  facing me, nearest threat distance, pit open, saws rising, ...). With a match running, every condition lights
-  up green or red for that bot and the firing rule glows.
+  facing me, nearest threat distance, pit open, saws rising, a trap is live, the target's distance to it, ...).
+  With a match running, every condition lights up green or red for that bot and the firing rule glows.
 - **Jev brain.** The prompts for the `maneuver`, `target` and `in_danger` questions, the description Jev reads
   for each installed technique, the gate that decides when a technique is offered, and the speculative yes/no
   questions that ride along. A live panel shows exactly what Jev sees right now.
@@ -139,9 +161,9 @@ option and plays each one out (`scripts/train/`).
 shared/      types; build.ts (builds, parts, costs, derived stats, condition language, BotLogic);
              logic.ts (rule-tree interpreter, Jev gates/questions); bots/ (the seven stock builds). Browser + server.
 server/      Express: /api/decide proxies Jev (key stays server-side), /api/health, /api/stats
-src/sim/     deterministic simulation: physics, weapons, hazards, perception, controller, match rules, quicksim
+src/sim/     deterministic simulation: physics, weapons, hazards and traps, perception, controller, match rules, quicksim
 src/brain/   decision scheduler (cadence, event nudges, stale-answer guard, fallback); trained/ (network + style policy)
-src/render/  Three.js arena, procedural bot models (armor plates, wheel size and rig scale follow the build)
+src/render/  Three.js arena (pit, saws, vents, launch pad, shock plates), procedural bot models (armor plates, wheel size and rig scale follow the build)
 src/ui/      HUD cards, ticker/commentary, event log, labels, comic callouts (+ policy), result screen,
              designer.ts (the Garage), library.ts
 src/audio/   procedural Web Audio sound engine (no asset files)
@@ -162,7 +184,8 @@ D debug nav lines · M mute · 1/2/3 speed · J all Jev · T all trained · B al
   `npx tsx scripts/balance.ts 36 1` runs seven mixed rosters and prints each weapon system's overall win share
   (25% is even; the stock bots sit at roughly 18–33% depending on the seed). Weapon numbers derive from build
   levels in `shared/build.ts` (`derive`); crit rules live in `src/sim/weapons.ts` (`CRIT_MULT`, `isBehind`),
-  hazard timing in `src/sim/arena.ts`.
+  hazard and trap geometry and timing in `src/sim/arena.ts` (`ARENA.vents`, `ARENA.pad`, `ARENA.shock`; all pure
+  functions of fight time), applied to the bots in `World.traps`.
 - Add a technique: add it to `Maneuver` in `shared/types.ts` and to `TECHNIQUES` in `shared/build.ts` (cost,
   weapon restriction), implement it in `controller.ts`, and give the stock builds a description/gate for it.
 - Add a weapon system: a `BotKind` in `shared/types.ts`, a `WEAPONS` entry and tuning in `shared/build.ts`, a

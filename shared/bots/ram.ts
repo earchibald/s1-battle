@@ -45,6 +45,19 @@ export const RAM_BUILD: BotBuild = {
         note: "push {target} onto the saws",
       },
       {
+        id: "trap",
+        when: [
+          { s: "arena.trapLive", op: "is", v: true },
+          { s: "target.dist", op: "<", v: 4 },
+          { s: "target.trapDist", op: "<", v: 3 },
+        ],
+        maneuver: "shove_to_saws",
+        target: "policy",
+        danger: 0.2,
+        dangerIfThreat: 0.4,
+        note: "{target} is beside a live trap, shove it on",
+      },
+      {
         id: "ram",
         when: [
           { s: "me.ready", op: "is", v: true },
@@ -110,7 +123,8 @@ export const RAM_BUILD: BotBuild = {
           when: [{ s: "arena.pitOpen", op: "is", v: true }],
         },
         shove_to_saws: {
-          description: "Get on the far side of the target from the kill saws and push it onto them. Best when the saws are up or about to rise.",
+          description:
+            "Get on the far side of the target from the kill saws and push it onto them; if a flame vent, shock plate or the launch pad is live and closer to the target, push it onto that instead. Best when the saws are up or about to rise, or the target is right beside a trap that is about to fire.",
           when: [],
         },
         flank: { description: "Come in from the target's side or rear so its weapon cannot meet my charge head-on.", when: [] },

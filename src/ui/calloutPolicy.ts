@@ -39,6 +39,8 @@ const VERB: Record<HitWeapon, string> = {
   spinner: "smacks",
   torch: "torches",
   ram: "rams",
+  vent: "roasted by a vent",
+  shock: "zapped by a shock plate",
 };
 
 export class CalloutDirector {
@@ -60,7 +62,7 @@ export class CalloutDirector {
     if (!bigCrit && !huge) return null;
     this.lastAt = now;
     const n = Math.round(e.amount);
-    const solo = e.weapon === "landing" || e.weapon === "wall" || e.weapon === "saws";
+    const solo = e.weapon === "landing" || e.weapon === "wall" || e.weapon === "saws" || e.weapon === "vent" || e.weapon === "shock";
     const caption = solo ? `${e.victim} ${VERB[e.weapon]} · ${n}` : `${e.attacker} ${VERB[e.weapon]} ${e.victim} · ${n}`;
     return { kind: e.weapon, size: e.amount >= 35 ? 1.5 : 1.2, crit: e.crit, caption, priority: 2 };
   }
