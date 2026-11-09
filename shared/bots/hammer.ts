@@ -13,7 +13,7 @@ export const HAMMER_BUILD: BotBuild = {
   kind: "hammer",
   color: 0xd13b3b,
   accent: 0x2b2b30,
-  levels: { armor: 4, motor: 3, frame: 3, steering: 3, power: 4, cycle: 3 },
+  levels: { armor: 3, motor: 3, frame: 3, steering: 3, power: 4, cycle: 3, wedge: 2, traction: 1, gyro: 1, sensors: 2 },
   techniques: ["strike_now", "engage", "hold", "circle", "retreat"],
   logic: {
     targeting: { prefer: "nearest", finishBelow: 0.3, finishWithin: 6 },

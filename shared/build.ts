@@ -11,19 +11,29 @@ import { BOT_KINDS } from "./types";
  * so a bot that lards on armor and weapon power ends up slow. Techniques cost points too.
  */
 
-export const BUDGET = 50;
+export const BUDGET = 60;
 export const MAX_LEVEL = 5;
 export const LEVEL_COST = [0, 1, 3, 6, 10, 15] as const;
 
-export type PartKey = "armor" | "motor" | "frame" | "steering" | "power" | "cycle";
-export const PART_KEYS: PartKey[] = ["armor", "motor", "frame", "steering", "power", "cycle"];
-export const PART_INFO: Record<PartKey, { label: string; group: "chassis" | "weapon"; blurb: string }> = {
+export type PartKey = "armor" | "motor" | "frame" | "steering" | "power" | "cycle" | "wedge" | "traction" | "gyro" | "sensors";
+export const PART_KEYS: PartKey[] = ["armor", "motor", "frame", "steering", "power", "cycle", "wedge", "traction", "gyro", "sensors"];
+export type PartGroup = "chassis" | "weapon" | "systems";
+export const PART_GROUPS: { key: PartGroup; label: string; blurb: string }[] = [
+  { key: "chassis", label: "Chassis", blurb: "Armor, frame and weapon power add mass. Mass drags on speed, acceleration and turning." },
+  { key: "weapon", label: "Weapon", blurb: "Power buys damage, throw, grip, flame or shove. Cycle buys recharge, spin-up or refuel speed." },
+  { key: "systems", label: "Systems", blurb: "Handling and electronics: how the bot takes a hit, keeps its feet, and how fast it thinks." },
+];
+export const PART_INFO: Record<PartKey, { label: string; group: PartGroup; blurb: string }> = {
   armor: { label: "Armor plating", group: "chassis", blurb: "Each level shrugs off 9% of incoming damage. Heavy." },
   motor: { label: "Drive motors", group: "chassis", blurb: "Top speed and acceleration. A heavy build needs more of it." },
   frame: { label: "Frame", group: "chassis", blurb: "Structural hit points: 200 plus 50 per level." },
   steering: { label: "Steering", group: "chassis", blurb: "Turn rate. Flanking and tracking a circling target need it." },
-  power: { label: "Weapon power", group: "weapon", blurb: "Damage, throw, grip or stun of the main weapon. Adds weight." },
-  cycle: { label: "Weapon cycle", group: "weapon", blurb: "Spin-up or recharge speed of the main weapon." },
+  power: { label: "Weapon power", group: "weapon", blurb: "Damage, throw, grip, flame or shove of the main weapon. Adds weight." },
+  cycle: { label: "Weapon cycle", group: "weapon", blurb: "Spin-up, recharge or refuel speed of the main weapon." },
+  wedge: { label: "Wedge skirt", group: "systems", blurb: "A low front skirt: flippers get less under me, and landings, walls and rams hurt 7% less per level." },
+  traction: { label: "Traction", group: "systems", blurb: "Grippy tires: 8% less knockback per level from bites, blows and shoves." },
+  gyro: { label: "Gyro stabilizer", group: "systems", blurb: "12% shorter stuns per level, and a spinner keeps its turn rate while the bar is up." },
+  sensors: { label: "Sensors", group: "systems", blurb: "Reaction time: the brain decides 40 ms sooner per level (both brains), and spots threats a little farther out." },
 };
 
 export interface WeaponSystem {
@@ -68,14 +78,38 @@ export const WEAPONS: Record<BotKind, WeaponSystem> = {
     mass: 0.65,
     radius: 0.9,
   },
+  spinner: {
+    kind: "spinner",
+    label: "Bar spinner",
+    weapon: "horizontal bar spinner",
+    blurb: "A long steel bar on a vertical axle. Wide reach, huge knockback, slow spin-up, and every hit stops the bar. Anyone who charges it gets launched: critical on a closing target.",
+    mass: 0.7,
+    radius: 0.9,
+  },
+  torch: {
+    kind: "torch",
+    label: "Flamethrower",
+    weapon: "flamethrower",
+    blurb: "A cone of flame a couple of meters long that half-ignores armor and keeps burning after the flame leaves. Limited fuel that refills while not firing. Rear burns find the fuel cells: critical.",
+    mass: 0.6,
+    radius: 0.9,
+  },
+  ram: {
+    kind: "ram",
+    label: "Ram plate",
+    weapon: "armored ram plate",
+    blurb: "No weapon but speed and mass. A boost reserve powers short charges; a front-on slam does damage and shoves hard. Shove victims into the pit or onto the saws. Slamming a bot against the wall is critical.",
+    mass: 0.75,
+    radius: 0.95,
+  },
 };
 
 export interface Technique {
   m: Maneuver;
   label: string;
   cost: number;
-  /** Only installable with this weapon system. */
-  kind?: BotKind;
+  /** Only installable with one of these weapon systems. */
+  kinds?: BotKind[];
   required?: boolean;
   blurb: string;
 }
@@ -85,20 +119,26 @@ export const TECHNIQUES: Technique[] = [
   { m: "hold", label: "Hold", cost: 0, blurb: "Stop and keep turning to face the target." },
   { m: "circle", label: "Circle", cost: 1, blurb: "Orbit the target at medium range." },
   { m: "flank", label: "Flank", cost: 3, blurb: "Swing around to the target's side or rear, where the critical hits live." },
-  { m: "spin_up", label: "Spin up", cost: 1, kind: "saw", blurb: "Keep clear until the blade is at speed." },
-  { m: "strike_now", label: "Strike", cost: 2, kind: "hammer", blurb: "Commit the hammer this instant." },
-  { m: "grab_now", label: "Grab", cost: 2, kind: "grabber", blurb: "Close the jaws this instant." },
-  { m: "crush", label: "Crush", cost: 1, kind: "grabber", blurb: "Hold still and squeeze." },
-  { m: "drag_to_pit", label: "Drag to pit", cost: 3, kind: "grabber", blurb: "Haul a held victim into the open pit." },
-  { m: "drag_to_saws", label: "Drag to saws", cost: 3, kind: "grabber", blurb: "Haul a held victim onto the kill saws." },
-  { m: "release", label: "Release", cost: 0, kind: "grabber", blurb: "Let go, usually to escape a third bot." },
-  { m: "flip_now", label: "Flip", cost: 2, kind: "flipper", blurb: "Fire the flipper this instant." },
+  { m: "spin_up", label: "Spin up", cost: 1, kinds: ["saw", "spinner"], blurb: "Keep clear until the blade or bar is at speed." },
+  { m: "strike_now", label: "Strike", cost: 2, kinds: ["hammer"], blurb: "Commit the hammer this instant." },
+  { m: "grab_now", label: "Grab", cost: 2, kinds: ["grabber"], blurb: "Close the jaws this instant." },
+  { m: "crush", label: "Crush", cost: 1, kinds: ["grabber"], blurb: "Hold still and squeeze." },
+  { m: "drag_to_pit", label: "Drag to pit", cost: 3, kinds: ["grabber"], blurb: "Haul a held victim into the open pit." },
+  { m: "drag_to_saws", label: "Drag to saws", cost: 3, kinds: ["grabber"], blurb: "Haul a held victim onto the kill saws." },
+  { m: "release", label: "Release", cost: 0, kinds: ["grabber"], blurb: "Let go, usually to escape a third bot." },
+  { m: "flip_now", label: "Flip", cost: 2, kinds: ["flipper"], blurb: "Fire the flipper this instant." },
+  { m: "burn", label: "Burn", cost: 2, kinds: ["torch"], blurb: "Close in and hold the flame on the target while fuel lasts." },
+  { m: "ram_now", label: "Ram", cost: 2, kinds: ["ram"], blurb: "Dump the boost reserve into a charge at the target." },
+  { m: "shove_to_pit", label: "Shove to pit", cost: 3, kinds: ["ram"], blurb: "Get on the far side of the target and bulldoze it into the open pit." },
+  { m: "shove_to_saws", label: "Shove to saws", cost: 3, kinds: ["ram"], blurb: "Get on the far side of the target and bulldoze it onto the kill saws." },
 ];
 export const TECHNIQUE_BY_M: Record<string, Technique> = Object.fromEntries(TECHNIQUES.map((t) => [t.m, t]));
 export function techniqueAllowed(m: Maneuver, kind: BotKind): boolean {
   const t = TECHNIQUE_BY_M[m];
-  return !!t && (!t.kind || t.kind === kind);
+  return !!t && (!t.kinds || t.kinds.includes(kind));
 }
+/** Techniques whose controller behavior is "drive at the target and fire the weapon the moment it is in reach". */
+export const FIRE_TECHNIQUES: Maneuver[] = ["strike_now", "grab_now", "flip_now", "burn", "ram_now"];
 
 /* ------------------------------------------------------------------------------------------------ */
 /* Condition language                                                                                */
@@ -110,6 +150,7 @@ export type SubjectKey =
   | "me.charge"
   | "me.ready"
   | "me.holding"
+  | "me.burning"
   | "target.dist"
   | "target.hp"
   | "target.facing"
@@ -118,6 +159,7 @@ export type SubjectKey =
   | "target.airborne"
   | "target.helpless"
   | "target.inReach"
+  | "target.burning"
   | "target.kind"
   | "anyone.inReach"
   | "nearest.dist"
@@ -144,6 +186,7 @@ export const SUBJECTS: Subject[] = [
   { key: "me.charge", label: "my weapon charge", type: "frac", group: "me" },
   { key: "me.ready", label: "my weapon is ready", type: "bool", group: "me" },
   { key: "me.holding", label: "I am holding a bot", type: "bool", group: "me" },
+  { key: "me.burning", label: "I am on fire", type: "bool", group: "me" },
   { key: "target.dist", label: "target distance", type: "meters", group: "target" },
   { key: "target.hp", label: "target health", type: "frac", group: "target" },
   { key: "target.facing", label: "target facing me", type: "facing", group: "target" },
@@ -152,6 +195,7 @@ export const SUBJECTS: Subject[] = [
   { key: "target.airborne", label: "target is airborne", type: "bool", group: "target" },
   { key: "target.helpless", label: "target is helpless (stunned, airborne or held)", type: "bool", group: "target" },
   { key: "target.inReach", label: "target in my weapon's reach", type: "bool", group: "target" },
+  { key: "target.burning", label: "target is on fire", type: "bool", group: "target" },
   { key: "target.kind", label: "target weapon type", type: "kind", group: "target" },
   { key: "threat.exists", label: "someone is lining me up", type: "bool", group: "threat" },
   { key: "threat.dist", label: "nearest threat distance", type: "meters", group: "threat" },
@@ -252,6 +296,9 @@ export interface WeaponTuning {
   hammer: { windup: number; strike: number; recover: number; cooldown: number; damage: number; stun: number };
   grabber: { crushDps: number; maxHold: number; cooldown: number };
   flipper: { cooldown: number; launchVz: number; launchForward: number; damage: number; anim: number };
+  spinner: { spinUpSeconds: number; baseDamage: number; spinDamage: number; biteCost: number; hitCooldown: number; launchSpin: number; gyroDrag: number };
+  torch: { range: number; halfAngle: number; dps: number; burnSeconds: number; refillSeconds: number; pierce: number; burnDps: number; burnTime: number };
+  ram: { boostMul: number; accelMul: number; burst: number; refill: number; hitMul: number; pinDps: number };
 }
 export type WeightClass = "lightweight" | "middleweight" | "heavyweight" | "superheavy";
 export interface Derived {
@@ -265,6 +312,16 @@ export interface Derived {
   weightClass: WeightClass;
   /** How much a flip throws this bot, 0..1. */
   flipResist: number;
+  /** Fraction of knockback shrugged off (traction). */
+  knockResist: number;
+  /** Fraction of stun time shrugged off (gyro). */
+  stunResist: number;
+  /** Fraction of landing / wall / ram damage shrugged off (wedge). */
+  impactResist: number;
+  /** Seconds between brain decisions (sensors). */
+  cadence: number;
+  /** Extra meters of threat awareness (sensors). */
+  awareness: number;
   tuning: WeaponTuning;
 }
 
@@ -273,9 +330,10 @@ const r2 = (x: number) => Math.round(x * 100) / 100;
 export function derive(b: BotBuild): Derived {
   const L = b.levels;
   const w = WEAPONS[b.kind];
-  const mass = r2(0.2 + w.mass + L.armor * 0.11 + L.frame * 0.03 + L.power * 0.04);
+  const mass = r2(0.2 + w.mass + L.armor * 0.11 + L.frame * 0.03 + L.power * 0.04 + L.wedge * 0.03 + L.traction * 0.01);
   const P = L.power;
   const C = L.cycle;
+  const flipResist = r2(Math.min(0.95, 1 - Math.min(1, 1.15 / mass) * (1 - L.wedge * 0.1)));
   return {
     hp: 200 + L.frame * 50,
     mass,
@@ -285,12 +343,37 @@ export function derive(b: BotBuild): Derived {
     armor: r2(L.armor * 0.09),
     radius: w.radius,
     weightClass: mass < 1.1 ? "lightweight" : mass < 1.5 ? "middleweight" : mass < 1.9 ? "heavyweight" : "superheavy",
-    flipResist: r2(1 - Math.min(1, 1.15 / mass)),
+    flipResist,
+    knockResist: r2(L.traction * 0.08),
+    stunResist: r2(L.gyro * 0.12),
+    impactResist: r2(L.wedge * 0.07),
+    cadence: r2(Math.max(0.25, 0.45 - L.sensors * 0.04)),
+    awareness: r2(L.sensors * 0.2),
     tuning: {
       saw: { spinUpSeconds: r2(3.5 - C * 0.5), baseDamage: 2 + P, spinDamage: 6 + P * 2, biteCost: r2(0.48 - C * 0.04), hitCooldown: 0.55, hopSpin: 0.9 },
-      hammer: { windup: 0.28, strike: 0.1, recover: 0.4, cooldown: r2(3.5 - C * 0.5), damage: 7 + P * 5, stun: r2(0.4 + P * 0.05) },
-      grabber: { crushDps: 2 + P, maxHold: r2(2.4 + P * 0.4), cooldown: r2(4.9 - C * 0.5) },
-      flipper: { cooldown: r2(3.6 - C * 0.5), launchVz: r2(6.5 + P * 0.9), launchForward: r2(4.4 + P * 0.7), damage: 4 + P * 2, anim: 0.45 },
+      hammer: { windup: 0.28, strike: 0.1, recover: 0.4, cooldown: r2(3.5 - C * 0.5), damage: 9 + P * 5, stun: r2(0.45 + P * 0.05) },
+      grabber: { crushDps: 3 + P, maxHold: r2(2.8 + P * 0.4), cooldown: r2(4.9 - C * 0.5) },
+      flipper: { cooldown: r2(3.6 - C * 0.5), launchVz: r2(8 + P), launchForward: r2(4.6 + P * 0.7), damage: 6 + P * 2, anim: 0.45 },
+      spinner: {
+        spinUpSeconds: r2(4.6 - C * 0.5),
+        baseDamage: 3 + P,
+        spinDamage: 4 + P * 1.4,
+        biteCost: r2(0.65 - C * 0.05),
+        hitCooldown: 0.7,
+        launchSpin: 0.6,
+        gyroDrag: r2(0.45 * (1 - L.gyro * 0.18)),
+      },
+      torch: {
+        range: r2(2.25 + P * 0.28),
+        halfAngle: 0.42,
+        dps: 5 + P * 2,
+        burnSeconds: r2(2.9 + C * 0.55),
+        refillSeconds: r2(5.5 - C * 0.5),
+        pierce: 0.4,
+        burnDps: r2(1.8 + P * 0.45),
+        burnTime: 1.5,
+      },
+      ram: { boostMul: r2(1.5 + P * 0.1), accelMul: 2.0, burst: r2(1.2 + C * 0.1), refill: r2(4.6 - C * 0.45), hitMul: r2(2.6 + P * 0.7), pinDps: r2(6 + P * 2) },
     },
   };
 }
@@ -311,6 +394,13 @@ export function costOf(b: BotBuild): Cost {
   return { parts, techniques, total, over: Math.max(0, total - BUDGET) };
 }
 
+/** "vertical saw or bar spinner": the weapon systems a technique fits. */
+export function techniqueKindsLabel(m: Maneuver): string {
+  const t = TECHNIQUE_BY_M[m];
+  if (!t?.kinds) return "any weapon";
+  return t.kinds.map((k) => WEAPONS[k].label.toLowerCase()).join(" or ");
+}
+
 export function clampLevel(x: unknown): number {
   const n = typeof x === "number" && Number.isFinite(x) ? Math.round(x) : 0;
   return Math.max(0, Math.min(MAX_LEVEL, n));
@@ -328,7 +418,7 @@ export function validateBuild(b: BotBuild): Problem[] {
   if (!b.name.trim()) out.push({ level: "error", text: "the bot needs a name" });
   if (!b.techniques.includes("engage")) out.push({ level: "error", text: "Engage is required" });
   for (const m of b.techniques) {
-    if (!techniqueAllowed(m, b.kind)) out.push({ level: "error", text: `${TECHNIQUE_BY_M[m]?.label ?? m} needs a ${WEAPONS[TECHNIQUE_BY_M[m]?.kind ?? b.kind].label.toLowerCase()}` });
+    if (!techniqueAllowed(m, b.kind)) out.push({ level: "error", text: `${TECHNIQUE_BY_M[m]?.label ?? m} needs a ${techniqueKindsLabel(m)}` });
   }
   const seen = new Set<string>();
   for (const r of b.logic.rules) {
@@ -475,6 +565,14 @@ export function fmtLevelValue(b: BotBuild, k: PartKey): string {
       return `${d.hp} hp`;
     case "steering":
       return `${d.turnRate.toFixed(1)} rad/s`;
+    case "wedge":
+      return `${Math.round(d.flipResist * 100)}% flip resist · −${Math.round(d.impactResist * 100)}% impact dmg`;
+    case "traction":
+      return `−${Math.round(d.knockResist * 100)}% knockback`;
+    case "gyro":
+      return `−${Math.round(d.stunResist * 100)}% stun${b.kind === "spinner" ? ` · bar costs ${Math.round(d.tuning.spinner.gyroDrag * 100)}% turn` : ""}`;
+    case "sensors":
+      return `decides every ${Math.round(d.cadence * 1000)} ms`;
     case "power":
       switch (b.kind) {
         case "saw":
@@ -485,6 +583,12 @@ export function fmtLevelValue(b: BotBuild, k: PartKey): string {
           return `${d.tuning.grabber.crushDps}/s crush · ${d.tuning.grabber.maxHold.toFixed(1)}s grip`;
         case "flipper":
           return `${d.tuning.flipper.damage} dmg · ${d.tuning.flipper.launchVz.toFixed(1)} m/s throw`;
+        case "spinner":
+          return `${d.tuning.spinner.baseDamage}–${d.tuning.spinner.baseDamage + d.tuning.spinner.spinDamage} per hit`;
+        case "torch":
+          return `${d.tuning.torch.dps}/s flame · ${d.tuning.torch.range.toFixed(1)} m reach`;
+        case "ram":
+          return `${d.tuning.ram.hitMul.toFixed(2)}× slam · ${Math.round((d.tuning.ram.boostMul - 1) * 100)}% boost`;
       }
       break;
     case "cycle":
@@ -497,6 +601,12 @@ export function fmtLevelValue(b: BotBuild, k: PartKey): string {
           return `${d.tuning.grabber.cooldown.toFixed(1)}s recharge`;
         case "flipper":
           return `${d.tuning.flipper.cooldown.toFixed(1)}s recharge`;
+        case "spinner":
+          return `${d.tuning.spinner.spinUpSeconds.toFixed(1)}s spin-up · −${Math.round(d.tuning.spinner.biteCost * 100)}% per hit`;
+        case "torch":
+          return `${d.tuning.torch.burnSeconds.toFixed(1)}s of flame · ${d.tuning.torch.refillSeconds.toFixed(1)}s refill`;
+        case "ram":
+          return `${d.tuning.ram.burst.toFixed(1)}s burst · ${d.tuning.ram.refill.toFixed(1)}s refill`;
       }
   }
   return "";

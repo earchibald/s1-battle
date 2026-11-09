@@ -115,6 +115,7 @@ button.garage:hover { background: rgba(200,176,106,.26); }
 .floater.big { font-size: 26px; color: #ffd166; }
 .floater.saw { color: #ffe08a; }
 .floater.hazard { color: #ff8a8a; }
+.floater.fire { color: #ff9a4a; }
 
 /* result */
 .hud-result { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: radial-gradient(ellipse at center, rgba(0,0,0,.35), rgba(0,0,0,.75)); animation: fadein .4s; }
@@ -144,6 +145,9 @@ button.garage:hover { background: rgba(200,176,106,.26); }
 .callout.wall .callout-word { --c: #fff; background: radial-gradient(circle, #d6e4ff 0%, #6ea0ff 55%, #1d3f99 100%); }
 .callout.crush .callout-word, .callout.saws .callout-word { background: radial-gradient(circle, #d8fff7 0%, #2dd4bf 55%, #0b6b63 100%); }
 .callout.pitted .callout-word { --c: #fff; background: radial-gradient(circle, #ff9d9d 0%, #ff2a1a 55%, #4a0000 100%); }
+.callout.spinner .callout-word { --c: #fff; background: radial-gradient(circle, #efe0ff 0%, #b57bff 55%, #4a1d8a 100%); }
+.callout.torch .callout-word { --c: #fff; background: radial-gradient(circle, #ffe9a8 0%, #ff6a00 50%, #a3000f 100%); }
+.callout.ram .callout-word { --c: #16100a; background: radial-gradient(circle, #f0ffe8 0%, #7cff6e 55%, #1f7a1a 100%); }
 .callout.destroyed .callout-word { font-size: 46px; --c: #fff; background: radial-gradient(circle, #fff 0%, #ff5a00 45%, #7a0000 100%); }
 .callout-crit { font-family: "Bangers", "Impact", sans-serif; font-size: 17px; letter-spacing: .14em; color: #fff; background: #e3002b; padding: 1px 10px; transform: rotate(-4deg) translateY(8px); border: 2px solid #16100a; z-index: 1; animation: critflash .18s steps(2) infinite; }
 .callout.crit .callout-word { -webkit-text-stroke: 2.5px #16100a; }

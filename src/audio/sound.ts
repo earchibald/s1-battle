@@ -19,6 +19,7 @@ export class SoundEngine {
   private noiseBuf!: AudioBuffer;
   private sawVoices = new Map<string, { osc: OscillatorNode; osc2: OscillatorNode; gain: GainNode; filter: BiquadFilterNode }>();
   private motors = new Map<string, { osc: OscillatorNode; gain: GainNode }>();
+  private torches = new Map<string, { gain: GainNode; filter: BiquadFilterNode }>();
   private grind: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
   private alarm: { osc: OscillatorNode; gain: GainNode; lfo: OscillatorNode } | null = null;
   muted = false;
@@ -172,8 +173,8 @@ export class SoundEngine {
 
   // ---- continuous sounds driven from the frame loop ----
 
-  /** Per-saw whine: pitch and level follow blade spin. */
-  updateSaw(id: string, spin: number, alive: boolean, biting: boolean) {
+  /** Per-saw whine: pitch and level follow blade spin. A bar spinner uses the same voice an octave down. */
+  updateSaw(id: string, spin: number, alive: boolean, biting: boolean, pitchMul = 1) {
     if (!this.ctx) return;
     const ctx = this.ctx;
     let v = this.sawVoices.get(id);
@@ -199,7 +200,7 @@ export class SoundEngine {
     }
     const t = ctx.currentTime;
     // Low, mellow hum that rises with spin; it only gets loud for the moment the blade is in something.
-    const f = 70 + spin * spin * 260;
+    const f = (70 + spin * spin * 260) * pitchMul;
     v.osc.frequency.setTargetAtTime(f, t, 0.08);
     v.osc2.frequency.setTargetAtTime(f * 2 + 1.5, t, 0.08);
     v.filter.frequency.setTargetAtTime(220 + spin * 700 + (biting ? 1800 : 0), t, 0.05);
@@ -228,6 +229,32 @@ export class SoundEngine {
     const t = ctx.currentTime;
     m.osc.frequency.setTargetAtTime(pitch * (0.8 + drive * 1.1), t, 0.12);
     m.gain.gain.setTargetAtTime(alive ? 0.002 + drive * 0.022 : 0, t, 0.12);
+  }
+
+  /** Per-torch roar: filtered noise that opens up while the flame is on. */
+  updateTorch(id: string, firing: boolean, alive: boolean) {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    let v = this.torches.get(id);
+    if (!v) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noiseBuf;
+      src.loop = true;
+      const filter = ctx.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.frequency.value = 700;
+      filter.Q.value = 0.7;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      src.connect(filter).connect(gain).connect(this.sfx);
+      src.start();
+      v = { gain, filter };
+      this.torches.set(id, v);
+    }
+    const t = ctx.currentTime;
+    const on = firing && alive;
+    v.filter.frequency.setTargetAtTime(on ? 900 + Math.random() * 300 : 500, t, 0.08);
+    v.gain.gain.setTargetAtTime(on ? 0.11 : 0, t, on ? 0.04 : 0.12);
   }
 
   /** Kill saws: grind loop level follows how far they're raised. */
@@ -327,9 +354,36 @@ export class SoundEngine {
     }
   }
 
+  spinnerHit(power: number, crit: boolean) {
+    if (!this.gate("spinhit", 0.1)) return;
+    this.clang(180 + power * 120, 0.5, 0.3 + power * 0.3);
+    this.noise(0.25, { type: "bandpass", freq: 1500, freqEnd: 300, q: 1.5, gain: 0.35 });
+    this.tone(90, 0.3, { freqEnd: 30, gain: 0.5 });
+    if (crit) this.noise(0.6, { type: "bandpass", freq: 400, freqEnd: 2200, q: 1.5, gain: 0.25, attack: 0.05 });
+  }
+
+  torchHit() {
+    if (!this.gate("torchhit", 0.25)) return;
+    this.noise(0.3, { type: "highpass", freq: 1800, freqEnd: 600, gain: 0.14, attack: 0.02 });
+  }
+
+  boost() {
+    this.noise(0.5, { type: "bandpass", freq: 300, freqEnd: 1800, q: 1.2, gain: 0.3, attack: 0.03 });
+    this.tone(70, 0.6, { type: "sawtooth", freqEnd: 160, gain: 0.08, attack: 0.05 });
+  }
+
+  slam(speed: number, crit: boolean) {
+    if (!this.gate("slam", 0.12)) return;
+    const k = clamp(speed / 9, 0, 1);
+    this.tone(80, 0.35, { freqEnd: 25, gain: 0.5 + k * 0.5 });
+    this.noise(0.18, { freq: 1200, freqEnd: 150, gain: 0.4 + k * 0.3 });
+    this.clang(150 + Math.random() * 40, 0.4, 0.2 + k * 0.3);
+    if (crit) this.clang(300, 0.7, 0.3);
+  }
+
   /** One-shot weapon back online: a sharp click and a short hiss. Distinct per kind so ears can track it. */
-  recharged(kind: "hammer" | "grabber" | "flipper") {
-    const f = kind === "hammer" ? 900 : kind === "grabber" ? 1400 : 2100;
+  recharged(kind: "hammer" | "grabber" | "flipper" | "ram") {
+    const f = kind === "hammer" ? 900 : kind === "grabber" ? 1400 : kind === "ram" ? 600 : 2100;
     this.tone(f, 0.05, { type: "square", gain: 0.07 });
     this.tone(f * 1.5, 0.08, { type: "square", gain: 0.05, delay: 0.05 });
     if (kind === "flipper") this.noise(0.25, { type: "highpass", freq: 3500, gain: 0.12, attack: 0.02 });

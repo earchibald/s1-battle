@@ -48,14 +48,22 @@ export class BotMesh {
   private jawR?: THREE.Group;
   private claw?: THREE.Group;
   private plate?: THREE.Group;
+  private bar?: THREE.Group;
+  private flame?: THREE.Mesh;
+  private flameMat?: THREE.MeshBasicMaterial;
+  private exhaust: THREE.MeshStandardMaterial[] = [];
+  private sensorLight?: THREE.MeshStandardMaterial;
   private smokeTimer = 0;
+  private burnTimer = 0;
   private wheelScale = 1;
+  private wheelWidth = 1;
   private rigScale = 1;
 
   constructor(bot: Bot) {
     this.bot = bot;
     const L = bot.def.build.levels;
     this.wheelScale = 0.85 + L.motor * 0.05;
+    this.wheelWidth = 1 + L.traction * 0.14;
     this.rigScale = 0.82 + L.power * 0.06;
     this.body = new THREE.Group();
     this.body.scale.setScalar(1.18 * (0.955 + L.frame * 0.015));
@@ -78,8 +86,61 @@ export class BotMesh {
       case "flipper":
         this.buildFlipper();
         break;
+      case "spinner":
+        this.buildSpinner();
+        break;
+      case "torch":
+        this.buildTorch();
+        break;
+      case "ram":
+        this.buildRam();
+        break;
     }
     this.addArmor(L.armor);
+    this.addSystems(L.wedge, L.gyro, L.sensors);
+  }
+
+  /** Systems parts that show on the body: a wedge skirt up front, a gyro dome on top, a sensor mast at the back. */
+  private addSystems(wedge: number, gyro: number, sensors: number) {
+    const r = this.bot.radius;
+    if (wedge > 0) {
+      const skirtMat = this.mat(0x5a606c, { roughness: 0.4, metalness: 0.9 });
+      const skirt = this.box(0.22 + wedge * 0.06, 0.05, r * 1.45, skirtMat, r * 0.78 + 0.05, 0.1, 0);
+      skirt.rotation.z = -0.32 - wedge * 0.03;
+      for (let i = 1; i < wedge; i++) {
+        const lip = this.box(0.04, 0.03, r * 1.45, STEEL, r * 0.78 + 0.08 + i * 0.05, 0.08 - i * 0.012, 0);
+        lip.rotation.z = -0.32;
+      }
+    }
+    if (gyro > 0) {
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(0.12 + gyro * 0.02, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), HUB_MAT);
+      dome.position.set(-0.35, 0.78, this.bot.kind === "hammer" ? 0.45 : 0.3);
+      dome.castShadow = true;
+      this.body.add(dome);
+      const ringMat = this.mat(0x6ee7ff, { emissive: 0x6ee7ff, emissiveIntensity: 0.6, roughness: 0.3 });
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.13 + gyro * 0.02, 0.015, 6, 20), ringMat);
+      ring.rotation.x = Math.PI / 2;
+      ring.position.copy(dome.position);
+      ring.position.y += 0.02;
+      this.body.add(ring);
+    }
+    if (sensors > 0) {
+      const mastX = -0.55;
+      const mastZ = this.bot.kind === "hammer" ? -0.5 : -0.35;
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.025, 0.3 + sensors * 0.1, 8), STEEL);
+      mast.position.set(mastX, 0.8 + sensors * 0.05, mastZ);
+      this.body.add(mast);
+      this.sensorLight = new THREE.MeshStandardMaterial({ color: 0xff4d5e, emissive: 0xff4d5e, emissiveIntensity: 1.2, roughness: 0.3 });
+      const tip = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 8), this.sensorLight);
+      tip.position.set(mastX, 0.95 + sensors * 0.1, mastZ);
+      this.body.add(tip);
+      if (sensors >= 3) {
+        const dish = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.06, 12, 1, true), HUB_MAT);
+        dish.position.set(mastX, 0.86 + sensors * 0.08, mastZ);
+        dish.rotation.x = Math.PI;
+        this.body.add(dish);
+      }
+    }
   }
 
   /** Armor plating: one riveted side plate per level, alternating sides, front to back. */
@@ -111,8 +172,8 @@ export class BotMesh {
     for (let i = 0; i < count; i++) {
       const xi = count === 1 ? 0 : x * (i === 0 ? 1 : -1);
       for (const side of [-1, 1]) {
-        const wh = wheel(r * this.wheelScale, w);
-        wh.position.set(xi, r * this.wheelScale, side * z);
+        const wh = wheel(r * this.wheelScale, w * this.wheelWidth);
+        wh.position.set(xi, r * this.wheelScale, side * (z + (w * (this.wheelWidth - 1)) / 2));
         this.body.add(wh);
         this.wheels.push(wh);
       }
@@ -287,6 +348,105 @@ export class BotMesh {
     this.addWheels(0.35, 0.66, 0.2, 0.16);
   }
 
+  /** CYCLONE: a low drum of a body with a long bar on a vertical axle over the front. */
+  private buildSpinner() {
+    const main = this.mat(this.bot.def.color, { roughness: 0.4, metalness: 0.6 });
+    const trim = this.mat(this.bot.def.accent, { roughness: 0.6 });
+    const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.68, 0.36, 10), main);
+    drum.position.set(-0.15, 0.36, 0);
+    drum.castShadow = true;
+    drum.receiveShadow = true;
+    this.body.add(drum);
+    this.box(0.5, 0.14, 0.7, trim, -0.45, 0.6); // motor housing
+    // Axle tower
+    const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 0.5, 10), STEEL);
+    tower.position.set(0.3, 0.7, 0);
+    this.body.add(tower);
+    this.bar = new THREE.Group();
+    this.bar.position.set(0.3, 0.96, 0);
+    const barMesh = new THREE.Mesh(new THREE.BoxGeometry(2.2 * this.rigScale, 0.1, 0.18), STEEL);
+    barMesh.castShadow = true;
+    this.bar.add(barMesh);
+    const tipMat = this.mat(0xe8ecf2, { metalness: 1, roughness: 0.2 });
+    for (const s of [-1, 1]) {
+      const tip = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.16, 0.26), tipMat);
+      tip.position.set(s * 1.05 * this.rigScale, 0, 0);
+      this.bar.add(tip);
+    }
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.14, 12), DARK_STEEL);
+    this.bar.add(hub);
+    this.body.add(this.bar);
+    this.addWheels(0.35, 0.58, 0.22, 0.14);
+  }
+
+  /** SCORCH: boxy chassis, twin fuel tanks on the back, a nozzle up front and a flame cone that shows while firing. */
+  private buildTorch() {
+    const main = this.mat(this.bot.def.color, { roughness: 0.45, metalness: 0.55 });
+    const trim = this.mat(this.bot.def.accent, { roughness: 0.6 });
+    this.box(1.15, 0.36, 1.05, main, -0.1, 0.36);
+    this.box(0.7, 0.1, 0.8, trim, -0.2, 0.6);
+    for (const z of [-0.28, 0.28]) {
+      const tank = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.75, 14), HUB_MAT);
+      tank.rotation.z = Math.PI / 2;
+      tank.position.set(-0.4, 0.74, z);
+      tank.castShadow = true;
+      this.body.add(tank);
+      const band = new THREE.Mesh(new THREE.TorusGeometry(0.175, 0.02, 6, 16), trim);
+      band.rotation.y = Math.PI / 2;
+      band.position.set(-0.4, 0.74, z);
+      this.body.add(band);
+    }
+    // Nozzle
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.0, 10), STEEL);
+    pipe.rotation.z = Math.PI / 2;
+    pipe.position.set(0.35, 0.62, 0);
+    this.body.add(pipe);
+    const nozzle = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.3, 12, 1, true), DARK_STEEL);
+    nozzle.rotation.z = -Math.PI / 2;
+    nozzle.position.set(0.95, 0.62, 0);
+    this.body.add(nozzle);
+    // Flame: an additive cone that scales with range and flickers while firing.
+    const range = this.bot.def.tuning.torch.range;
+    this.flameMat = new THREE.MeshBasicMaterial({ color: 0xff7a1a, transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false });
+    this.flame = new THREE.Mesh(new THREE.ConeGeometry(0.55, range, 14, 1, true), this.flameMat);
+    this.flame.rotation.z = -Math.PI / 2;
+    this.flame.position.set(1.0 + range / 2, 0.6, 0);
+    this.flame.visible = false;
+    this.body.add(this.flame);
+    this.addWheels(0.38, 0.56, 0.22, 0.15);
+  }
+
+  /** DOZER: a brick with a big angled plow up front, brush bars, and twin exhaust stacks that glow on boost. */
+  private buildRam() {
+    const main = this.mat(this.bot.def.color, { roughness: 0.55, metalness: 0.5 });
+    const trim = this.mat(this.bot.def.accent, { roughness: 0.5, metalness: 0.8 });
+    this.box(1.35, 0.5, 1.3, main, -0.15, 0.4);
+    this.box(1.0, 0.1, 1.2, trim, -0.2, 0.68);
+    // Plow plate
+    const plow = this.box(0.12, 0.62 * this.rigScale, 1.55, STEEL, 0.85, 0.42, 0);
+    plow.rotation.z = -0.28;
+    const edge = this.box(0.08, 0.08, 1.6, trim, 0.98, 0.14, 0);
+    edge.rotation.z = -0.28;
+    for (const z of [-0.5, 0, 0.5]) {
+      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.7, 8), DARK_STEEL);
+      bar.position.set(0.55, 0.5, z);
+      bar.rotation.z = 0.5;
+      this.body.add(bar);
+    }
+    // Exhaust stacks
+    for (const z of [-0.3, 0.3]) {
+      const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 0.4, 10), DARK_STEEL);
+      stack.position.set(-0.6, 0.9, z);
+      this.body.add(stack);
+      const glowMat = new THREE.MeshStandardMaterial({ color: 0x331100, emissive: 0xff6a00, emissiveIntensity: 0, roughness: 0.6 });
+      const glow = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.06, 10), glowMat);
+      glow.position.set(-0.6, 1.11, z);
+      this.body.add(glow);
+      this.exhaust.push(glowMat);
+    }
+    this.addWheels(0.45, 0.72, 0.26, 0.2);
+  }
+
   /** Animate from sim state. `dt` is unscaled render delta for smoothness. */
   update(dt: number, time: number, emitSmoke: (p: THREE.Vector3, heavy: boolean) => void) {
     const b = this.bot;
@@ -337,6 +497,17 @@ export class BotMesh {
       this.smokeTimer = b.alive ? 0.18 + hp * 0.4 : 0.08;
       emitSmoke(pos.clone().add(new THREE.Vector3(-Math.cos(b.heading) * 0.4, 0.6, Math.sin(b.heading) * 0.4)), !b.alive);
     }
+    // On fire: orange flicker on the body and a steady stream of smoke.
+    if (b.burn > 0 && b.alive) {
+      const flick = 0.35 + 0.35 * Math.max(0, Math.sin(time * 23) + Math.sin(time * 31) * 0.5);
+      for (const m of this.bodyMats) m.emissive.setRGB(Math.max(m.emissive.r, flick), Math.max(m.emissive.g, flick * 0.35), m.emissive.b);
+      this.burnTimer -= dt;
+      if (this.burnTimer <= 0) {
+        this.burnTimer = 0.07;
+        emitSmoke(pos.clone().add(new THREE.Vector3((Math.random() - 0.5) * 0.6, 0.7, (Math.random() - 0.5) * 0.6)), false);
+      }
+    }
+    if (this.sensorLight) this.sensorLight.emissiveIntensity = b.alive ? 0.6 + 0.8 * Math.max(0, Math.sin(time * 5)) : 0;
 
     // Weapon rigs
     const w = b.weapon;
@@ -360,6 +531,28 @@ export class BotMesh {
       const a = w.flipAnim;
       const fired = a > 0.75 ? 1 : a > 0 ? Math.pow(a / 0.75, 0.6) : 0;
       this.plate.rotation.z = -(0.08 + fired * 1.25);
+    }
+    if (this.bar) this.bar.rotation.y += dt * (1.5 + w.spin * 42);
+    if (this.flame && this.flameMat) {
+      this.flame.visible = w.firing && b.alive;
+      if (this.flame.visible) {
+        const flick = 0.85 + Math.sin(time * 47) * 0.1 + Math.sin(time * 29) * 0.05;
+        this.flame.scale.set(flick, 0.75 + w.spin * 0.35, flick);
+        this.flameMat.opacity = 0.55 + Math.random() * 0.25;
+        this.flameMat.color.setHSL(0.06 + Math.random() * 0.04, 1, 0.55);
+        this.flame.rotation.x += dt * 9;
+      }
+    }
+    if (this.exhaust.length) {
+      const glow = w.boosting ? 1.6 + Math.sin(time * 40) * 0.4 : Math.max(0, this.exhaust[0].emissiveIntensity - dt * 3);
+      for (const m of this.exhaust) m.emissiveIntensity = glow;
+      if (w.boosting && b.alive) {
+        this.burnTimer -= dt;
+        if (this.burnTimer <= 0) {
+          this.burnTimer = 0.05;
+          emitSmoke(pos.clone().add(new THREE.Vector3(-Math.cos(b.heading) * 0.7, 1.1, Math.sin(b.heading) * 0.7)), false);
+        }
+      }
     }
   }
 }

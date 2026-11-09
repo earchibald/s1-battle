@@ -13,7 +13,7 @@ export const FLIPPER_BUILD: BotBuild = {
   kind: "flipper",
   color: 0xff7a1a,
   accent: 0x2a1c12,
-  levels: { armor: 1, motor: 5, frame: 3, steering: 4, power: 3, cycle: 3 },
+  levels: { armor: 1, motor: 5, frame: 3, steering: 4, power: 3, cycle: 3, wedge: 2, traction: 2, gyro: 1, sensors: 2 },
   techniques: ["flip_now", "engage", "flank", "circle", "retreat"],
   logic: {
     targeting: { prefer: "nearest", finishBelow: 0.4, finishWithin: 3 },

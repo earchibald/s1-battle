@@ -16,7 +16,7 @@ export const GRABBER_BUILD: BotBuild = {
   kind: "grabber",
   color: 0x2dd4bf,
   accent: 0x14323a,
-  levels: { armor: 2, motor: 4, frame: 3, steering: 3, power: 3, cycle: 3 },
+  levels: { armor: 2, motor: 4, frame: 3, steering: 3, power: 3, cycle: 3, wedge: 2, traction: 2, gyro: 0, sensors: 2 },
   techniques: ["grab_now", "engage", "flank", "circle", "retreat", "drag_to_pit", "drag_to_saws", "crush", "release"],
   logic: {
     targeting: { prefer: "nearest", finishBelow: 0.4, finishWithin: 3 },

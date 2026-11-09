@@ -1,6 +1,6 @@
 # S1 Arena — Jev Robot Battles
 
-Four combat robots fight in a 3D arena. Each one thinks with **Jev**, TypeSafe's System One model: several
+Four combat robots fight in a 3D arena, picked from seven weapon systems. Each one thinks with **Jev**, TypeSafe's System One model: several
 times a second, every bot sends a plain-English description of what it can see to Jev and gets back a typed
 decision — who to target, which maneuver to run, and a probability that it is about to be hit. Code turns
 that decision into motor and weapon commands at 60 Hz.
@@ -24,13 +24,20 @@ Open http://localhost:5173. Without an API key the arena still runs on baseline 
 | **PILEDRIVER** | overhead pneumatic hammer | slow, armored (35%); windup → strike → recover → long cooldown; huge hit + stun | engage · strike_now · hold · circle · retreat |
 | **CLAMP** | hydraulic grabbing arm | control bot; grabs, crushes, and drags victims into the pit or onto the kill saws | engage · grab_now · flank · circle · retreat · drag_to_pit · drag_to_saws · crush · release |
 | **LAUNCHER** | pneumatic flipper wedge | quick, long recharge; throws opponents into the air — landings and walls do the damage | engage · flip_now · flank · circle · retreat |
+| **CYCLONE** | horizontal bar spinner | wide reach, huge knockback, slow spin-up, every hit stops the bar; the gyro keeps it turning | engage · spin_up · hold · circle · flank · retreat |
+| **SCORCH** | flamethrower | a cone of flame that half-ignores armor and keeps burning; limited fuel that refills while not firing | engage · burn · flank · circle · retreat · hold |
+| **DOZER** | armored ram plate | no weapon but mass and a boost reserve: slams, wall pins, and shoving bots into hazards | engage · ram_now · shove_to_pit · shove_to_saws · flank · retreat · hold |
+
+The default roster is the first four; the Garage's **Library** tab loads any stock bot (or any saved one) into any
+slot, so two saws or four rams is a legal line-up.
 
 Arena hazards: a **pit** that opens on a cycle (first at 30 s, 12 s open / 18 s closed) and two **kill saw**
 slots that rise every 10 s. Walls hurt at speed, especially when you arrive airborne.
 
 **Critical hits** are earned, not rolled (plus a small random chance): a saw bite from *behind*, a hammer on a
 bot that is stunned / airborne / held, a flip that sends a bot toward a wall, a crit flip's landing, a wall hit
-while airborne, and a crush from a rear grab. Crits do 1.75× damage, chime, flash a comic "CRITICAL!" callout,
+while airborne, a crush from a rear grab, a spinner hit on a bot *closing* on the bar, flame on a bot's back, and
+a ram slam that pins a bot against the wall. Crits do 1.75× damage, chime, flash a comic "CRITICAL!" callout,
 and buy a beat of slow motion. This is what makes Jev's `flank` decision worth choosing.
 
 **Sound** is entirely synthesized with Web Audio (`src/audio/sound.ts`): saw whine tracks blade spin, hammer
@@ -48,12 +55,16 @@ then damage dealt. Matches typically run 40–90 s.
 Press `G` or click **🛠 Garage** to open the designer. Each of the four roster slots is a **build** you can
 change end to end, with a live 3D turntable of the result:
 
-- **Build.** Pick a weapon system (saw / hammer / jaws / flipper), set six parts on a 0–5 scale (armor, drive
-  motors, frame, steering, weapon power, weapon cycle) and install techniques. Everything costs points from a
-  **50-point budget** on a steep curve (1 / 3 / 6 / 10 / 15 per level), and armor, frame and weapon power add
-  **mass**, which drags on top speed, acceleration and turn rate. Stock bots sit at 47–50 points, so there is
-  no free lunch: a saw with hammer-grade armor is a slow saw. The spec sheet shows every derived number and its
-  delta from stock; illegal builds cannot deploy.
+- **Build.** Pick a weapon system (saw / hammer / jaws / flipper / bar spinner / flamethrower / ram plate), set
+  ten parts on a 0–5 scale and install techniques. Chassis: armor, drive motors, frame, steering. Weapon: power,
+  cycle. Systems: **wedge skirt** (flip and impact resistance), **traction** (knockback resistance), **gyro**
+  (shorter stuns; a spinner keeps its turn rate with the bar up) and **sensors** (the brain decides 40 ms sooner
+  per level, Jev or baseline, and spots threats farther out). Everything costs points from a **60-point budget**
+  on a steep curve (1 / 3 / 6 / 10 / 15 per level), and armor, frame, weapon power and the wedge add **mass**,
+  which drags on top speed, acceleration and turn rate. Stock bots sit at 53–60 points, so there is no free
+  lunch: a saw with hammer-grade armor is a slow saw. Parts show on the model (plates, tire width, skirt, gyro
+  dome, sensor mast). The spec sheet shows every derived number and its delta from stock; illegal builds cannot
+  deploy.
 - **Baseline brain.** The scripted decision tree, fully editable: a targeting policy plus ordered
   `IF conditions THEN maneuver` rules over a small condition vocabulary (my health, target distance, target
   facing me, nearest threat distance, pit open, saws rising, ...). With a match running, every condition lights
@@ -61,12 +72,19 @@ change end to end, with a live 3D turntable of the result:
 - **Jev brain.** The prompts for the `maneuver`, `target` and `in_danger` questions, the description Jev reads
   for each installed technique, the gate that decides when a technique is offered, and the speculative yes/no
   questions that ride along. A live panel shows exactly what Jev sees right now.
+- **Logic tuning.** After a **Quick sim** every baseline rule shows how often it fired (and how much fell through
+  to the default). Every numeric threshold (rule conditions, targeting policy) has a **⚙ tune** button that sweeps
+  seven values through the headless sim with the current roster, same seeds per bar, and plots this bot's win
+  count per value; click a bar to apply it. **A/B vs stock brain** runs the roster twice, with this slot's rules
+  as edited and as stock, same body and seeds. All of it runs in the page in a second or two.
+- **Library.** **💾 Save build** stores the selected slot under its callsign; the Library tab lists saved builds
+  and the seven stock bots, loads any into any slot, saves and loads whole rosters, and imports/exports the
+  library as JSON.
 
 Brain edits apply to the fighting bot **live**; body changes need **Deploy** (which starts a new match).
-**Simulate** runs 12 headless baseline-vs-baseline matches with the roster and shows win counts. The roster
-persists in `localStorage`; **Export / Import** moves it as JSON, and `npx tsx scripts/headless.ts 24 1
-s1-garage.json` runs a longer tournament with it. The build travels with each `/api/decide` request, so the
-server stays stateless.
+The roster and library persist in `localStorage`; **Export / Import** moves the roster as JSON, and
+`npx tsx scripts/headless.ts 24 1 s1-garage.json` runs a longer tournament with it. The build travels with each
+`/api/decide` request, so the server stays stateless.
 
 Cost and latency, measured: a match generates ~400–600 Jev decisions (one request each, ~7/s across four
 bots), ~90–100 ms average latency, ~450k input tokens ≈ $0.02 per match at Jev 1.14 pricing.
@@ -96,14 +114,14 @@ call fails or times out, the bot falls back to its baseline for that decision an
 
 ```
 shared/      types; build.ts (builds, parts, costs, derived stats, condition language, BotLogic);
-             logic.ts (rule-tree interpreter, Jev gates/questions); bots/ (the four stock builds). Browser + server.
+             logic.ts (rule-tree interpreter, Jev gates/questions); bots/ (the seven stock builds). Browser + server.
 server/      Express: /api/decide proxies Jev (key stays server-side), /api/health, /api/stats
 src/sim/     deterministic simulation: physics, weapons, hazards, perception, controller, match rules, quicksim
 src/brain/   decision scheduler (cadence, event nudges, stale-answer guard, fallback)
 src/render/  Three.js arena, procedural bot models (armor plates, wheel size and rig scale follow the build)
-src/ui/      HUD cards, ticker/commentary, labels, comic callouts, result screen, designer.ts (the Garage)
+src/ui/      HUD cards, ticker/commentary, labels, comic callouts, result screen, designer.ts (the Garage), library.ts
 src/audio/   procedural Web Audio sound engine (no asset files)
-scripts/     probe-jev.ts (latency check), headless.ts (balance tuning / tournaments, accepts a garage export)
+scripts/     probe-jev.ts (latency check), headless.ts (tournaments; stock kinds or a garage export), balance.ts (win share sweep)
 ```
 
 ## Controls
@@ -113,11 +131,17 @@ J all Jev · B all baseline. Click a bot card's brain badge to switch just that 
 
 ## Tuning and extending
 
-- `npx tsx scripts/headless.ts 24` runs 24 baseline-vs-baseline matches and prints lengths, winners, and
-  elimination types. Weapon numbers derive from build levels in `shared/build.ts` (`derive`); crit rules live
-  in `src/sim/weapons.ts` (`CRIT_MULT`, `isBehind`), hazard timing in `src/sim/arena.ts`.
+- `npx tsx scripts/headless.ts 24 1 saw,spinner,torch,ram` runs 24 baseline-vs-baseline matches with those stock
+  kinds (or a garage export) and prints lengths, winners, damage and elimination types.
+  `npx tsx scripts/balance.ts 36 1` runs seven mixed rosters and prints each weapon system's overall win share
+  (25% is even; the stock bots sit at roughly 18–33% depending on the seed). Weapon numbers derive from build
+  levels in `shared/build.ts` (`derive`); crit rules live in `src/sim/weapons.ts` (`CRIT_MULT`, `isBehind`),
+  hazard timing in `src/sim/arena.ts`.
 - Add a technique: add it to `Maneuver` in `shared/types.ts` and to `TECHNIQUES` in `shared/build.ts` (cost,
   weapon restriction), implement it in `controller.ts`, and give the stock builds a description/gate for it.
+- Add a weapon system: a `BotKind` in `shared/types.ts`, a `WEAPONS` entry and tuning in `shared/build.ts`, a
+  stock build in `shared/bots/`, mechanics in `weapons.ts` (and `bot.ts` for the hitbox and readiness), words in
+  `perception.ts`, a rig in `render/botMesh.ts`, an icon in `ui/hud.ts`, and sounds/callouts to taste.
 - Add a condition subject: add it to `SUBJECTS` in `shared/build.ts` and to `subjectValue` in `shared/logic.ts`;
   the designer picks it up automatically.
 - Add a weapon system: new entry in `WEAPONS`, a stock build in `shared/bots/`, a weapon branch in

@@ -26,7 +26,7 @@ export interface BrainStatus {
 }
 
 export interface BrainOptions {
-  /** Seconds between decisions. */
+  /** Seconds between decisions when the build does not say (sensors level sets it per bot). */
   cadence: number;
   decideUrl: string;
 }
@@ -48,8 +48,13 @@ export class Brain {
     this.mode = mode;
     this.opts = opts;
     // Stagger first decisions so four requests don't fire on the same frame.
-    this.timer = Math.random() * opts.cadence;
+    this.timer = Math.random() * this.cadence;
     this.status = { mode, inFlight: false, lastLatencyMs: 0, avgLatencyMs: 0, decisions: 0, fallbacks: 0, lastError: null };
+  }
+
+  /** Seconds between decisions for this bot: its sensors level, else the default. */
+  get cadence(): number {
+    return this.bot.def.stats.cadence || this.opts.cadence;
   }
 
   /** Events that should make a bot rethink right away rather than wait for the next tick. */
@@ -69,7 +74,7 @@ export class Brain {
     if (world.phase !== "fighting" || !this.bot.alive) return;
     this.timer -= dt;
     if (this.timer > 0) return;
-    this.timer = this.opts.cadence;
+    this.timer = this.cadence;
     const s = sense(this.bot, world.bots, world.fightTime, world.timeLeft);
     if (this.mode === "baseline" || !Brain.jevAvailable) {
       this.apply(this.bot.def.baseline(s), emit);

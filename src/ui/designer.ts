@@ -5,6 +5,7 @@ import {
   BUDGET,
   LEVEL_COST,
   MAX_LEVEL,
+  PART_GROUPS,
   PART_INFO,
   PART_KEYS,
   SUBJECTS,
@@ -19,9 +20,13 @@ import {
   fmtLevelValue,
   normalizeBuild,
   techniqueAllowed,
+  techniqueKindsLabel,
   validateBuild,
 } from "@shared/build";
-import { STOCK_BUILDS, defaultTechniqueLogic, stockBuild } from "@shared/bots/index";
+import { STOCK_BUILDS, STOCK_ORDER, defaultTechniqueLogic, stockBuild } from "@shared/bots/index";
+import { STOCK_PROMPTS } from "@shared/bots/prompts";
+import { Library } from "./library";
+import type { QuickSimResult } from "../sim/quicksim";
 import { buildQuestions, defFromBuild, evalCondition, makeContext } from "@shared/logic";
 import type { BotKind, Maneuver } from "@shared/types";
 import { BOT_KINDS } from "@shared/types";
@@ -54,7 +59,39 @@ export interface DesignerCallbacks {
   toast(text: string): void;
 }
 
-type Tab = "build" | "baseline" | "jev";
+type Tab = "build" | "baseline" | "jev" | "library";
+
+/** One number in the brain that the tuner can sweep. */
+interface Tunable {
+  key: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  fmt(v: number): string;
+  get(b: BotBuild): number | undefined;
+  set(b: BotBuild, v: number): void;
+}
+interface TuneState {
+  t: Tunable;
+  slot: number;
+  values: number[];
+  wins: number[];
+  damage: number[];
+  done: number[];
+  n: number;
+  running: boolean;
+  current: number;
+}
+interface AbState {
+  slot: number;
+  n: number;
+  edited: number;
+  stock: number;
+  done: number;
+  running: boolean;
+}
+const TUNE_STEPS = 7;
 
 const SWATCHES = [0xe6a92b, 0xd13b3b, 0x2dd4bf, 0xff7a1a, 0x6ee7ff, 0xb57bff, 0x7cff6e, 0xff5fa2, 0xf4f4f4, 0x8b93a7];
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -74,6 +111,11 @@ export class Designer {
   private liveAcc = 0;
   private simRunning = false;
   private simHtml = "";
+  /** The last quick sim, with the arena name each slot fought under, so rules can show how often they fired. */
+  private lastSim: { result: QuickSimResult; names: string[] } | null = null;
+  private tune: TuneState | null = null;
+  private ab: AbState | null = null;
+  readonly library = new Library();
 
   // 3D preview
   private pRenderer: THREE.WebGLRenderer | null = null;
@@ -97,7 +139,7 @@ export class Designer {
           </div>
           <nav class="dz-roster" id="dz-roster"></nav>
           <div class="dz-actions">
-            <button data-a="sim" title="Run 12 headless matches with the current roster (baseline brains)">⚗ Simulate</button>
+            <button data-a="sim" title="Run 12 headless matches with the current roster (baseline brains); rules then show how often they fired">⚗ Simulate</button>
             <button data-a="import">⇪ Import</button>
             <button data-a="export">⇩ Export</button>
             <button data-a="deploy" class="primary">DEPLOY ▶</button>
@@ -112,6 +154,7 @@ export class Designer {
               <button data-tab="build">BUILD</button>
               <button data-tab="baseline">BASELINE BRAIN</button>
               <button data-tab="jev">JEV BRAIN</button>
+              <button data-tab="library">LIBRARY</button>
             </nav>
             <div class="dz-editor-body" id="dz-editor"></div>
           </main>
@@ -191,12 +234,7 @@ export class Designer {
 
   private exportJson() {
     const json = JSON.stringify({ version: 1, builds: this.builds }, null, 2);
-    const blob = new Blob([json], { type: "application/json" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "s1-garage.json";
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    download("s1-garage.json", json);
     void navigator.clipboard?.writeText(json).catch(() => undefined);
     this.cb.toast("Garage exported (and copied to the clipboard)");
   }
@@ -283,6 +321,7 @@ export class Designer {
       <label class="dz-field"><span>Tagline</span><input id="dz-tagline" maxlength="60" value="${esc(b.tagline)}" spellcheck="false" /></label>
       <div class="dz-field"><span>Livery</span><div class="dz-swatches">${SWATCHES.map((c) => `<button class="dz-swatch ${c === b.color ? "on" : ""}" data-color="${c}" style="--c:${hex(c)}"></button>`).join("")}</div></div>
       <div class="dz-preview-foot">
+        <button data-a="save" class="dz-save" title="Save this build to the library under its callsign">💾 Save build</button>
         <button data-a="reset" class="dz-ghost">↺ Reset to stock</button>
       </div>`;
     const name = this.previewEl.querySelector<HTMLInputElement>("#dz-name")!;
@@ -312,6 +351,7 @@ export class Designer {
       };
     });
     this.previewEl.querySelector<HTMLButtonElement>('[data-a="reset"]')!.onclick = () => this.resetSlot();
+    this.previewEl.querySelector<HTMLButtonElement>('[data-a="save"]')!.onclick = () => this.saveCurrentBuild();
     this.attachPreviewCanvas();
   }
 
@@ -326,6 +366,9 @@ export class Designer {
       case "jev":
         this.editorEl.innerHTML = this.htmlJev();
         break;
+      case "library":
+        this.editorEl.innerHTML = this.htmlLibrary();
+        break;
     }
     this.bindEditor();
   }
@@ -334,7 +377,7 @@ export class Designer {
 
   private htmlBuild(): string {
     const b = this.b;
-    const weapons = BOT_KINDS.map((k) => {
+    const weapons = STOCK_ORDER.map((k) => {
       const w = WEAPONS[k];
       return `<button class="dz-weapon ${k === b.kind ? "on" : ""}" data-kind="${k}" style="--c:${hex(STOCK_BUILDS[k].color)}">
         <span class="dz-weapon-icon">${WEAPON_ICON[k]}</span>
@@ -363,7 +406,7 @@ export class Designer {
       const on = b.techniques.includes(t.m);
       const allowed = techniqueAllowed(t.m, b.kind);
       const cls = ["dz-chip", on ? "on" : "", allowed ? "" : "locked", t.required ? "required" : ""].join(" ");
-      const lock = allowed ? "" : `<i class="dz-chip-lock">needs ${WEAPONS[t.kind!].label.toLowerCase()}</i>`;
+      const lock = allowed ? "" : `<i class="dz-chip-lock">needs ${techniqueKindsLabel(t.m)}</i>`;
       return `<button class="${cls}" data-tech="${t.m}" title="${esc(t.blurb)}"><b>${t.label}</b><span class="dz-chip-cost">${t.cost === 0 ? "free" : t.cost + " pt" + (t.cost > 1 ? "s" : "")}</span>${lock}</button>`;
     }).join("");
 
@@ -372,14 +415,14 @@ export class Designer {
         <header><h2>Weapon system</h2><p>Defines the mechanics, the model and which techniques fit. Switching loads that weapon's stock brain.</p></header>
         <div class="dz-weapons">${weapons}</div>
       </section>
-      <section class="dz-sec">
-        <header><h2>Chassis</h2><p>Every level costs more than the last (${LEVEL_COST.slice(1).join(" / ")} pts) and armor, frame and weapon power add mass. Mass drags on speed, acceleration and turning.</p></header>
-        <div class="dz-parts">${(["armor", "motor", "frame", "steering"] as PartKey[]).map(part).join("")}</div>
-      </section>
-      <section class="dz-sec">
-        <header><h2>Weapon</h2><p>Power buys damage, throw and grip. Cycle buys recharge or spin-up speed.</p></header>
-        <div class="dz-parts">${(["power", "cycle"] as PartKey[]).map(part).join("")}</div>
-      </section>
+      ${PART_GROUPS.map(
+        (g) => `<section class="dz-sec">
+        <header><h2>${g.label}</h2><p>${esc(g.blurb)}${g.key === "chassis" ? ` Every level costs more than the last (${LEVEL_COST.slice(1).join(" / ")} pts).` : ""}</p></header>
+        <div class="dz-parts">${PART_KEYS.filter((k) => PART_INFO[k].group === g.key)
+          .map(part)
+          .join("")}</div>
+      </section>`,
+      ).join("")}
       <section class="dz-sec">
         <header><h2>Techniques</h2><p>The maneuver vocabulary both brains may use. Jev only ever chooses among installed techniques; baseline rules that use an uninstalled one are skipped.</p></header>
         <div class="dz-chips">${chips}</div>
@@ -410,6 +453,7 @@ export class Designer {
         op = `<select class="dz-sel op" data-cpath="${path}" data-cidx="${idx}" data-ck="op"><option value="<" ${c.op === "<" ? "selected" : ""}>&lt;</option><option value=">" ${c.op === ">" ? "selected" : ""}>&gt;</option></select>`;
         const r = rangeFor(subj.type);
         val = `<span class="dz-range"><input type="range" min="${r.min}" max="${r.max}" step="${r.step}" value="${Number(c.v)}" data-cpath="${path}" data-cidx="${idx}" data-ck="v" /><output>${fmtValue(subj.type, Number(c.v))}</output></span>`;
+        if (path.startsWith("rule:")) val += `<button class="dz-tune" data-tune="cond|${path}|${idx}" title="Tune: sweep this threshold in the headless sim and see which value wins most">⚙</button>`;
       }
     }
     return `<div class="dz-cond" data-cond="${path}:${idx}"><i class="dz-dot"></i>${subjectSel}${op}${val}<button class="dz-x" data-cdel="${path}" data-cidx="${idx}" title="Remove condition">×</button></div>`;
@@ -486,10 +530,14 @@ export class Designer {
     const b = this.b;
     const t = b.logic.targeting;
     const installed = new Set(b.techniques);
+    const stats = this.ruleStats();
     const rules = b.logic.rules
       .map((r, i) => {
         const isDefault = r.when.length === 0;
         const missing = !installed.has(r.maneuver);
+        const st = stats ? stats.rules[r.id] ?? 0 : null;
+        const pct = stats && st !== null && stats.total > 0 ? Math.round((st / stats.total) * 100) : null;
+        const statTag = pct === null ? "" : `<span class="dz-rule-stat ${pct === 0 ? "zero" : ""}" title="${st} of ${stats!.total} baseline decisions in the last quick sim"><i style="width:${pct}%"></i><em>${pct}% fired</em></span>`;
         const manOpts = TECHNIQUES.filter((x) => techniqueAllowed(x.m, b.kind))
           .map((x) => `<option value="${x.m}" ${x.m === r.maneuver ? "selected" : ""}>${maneuverLabel(x.m)}${installed.has(x.m) ? "" : " (not installed)"}</option>`)
           .join("");
@@ -498,6 +546,7 @@ export class Designer {
           <div class="dz-rule-head">
             <span class="dz-rule-n">${i + 1}</span>
             <input class="dz-rule-id" value="${esc(r.id)}" data-rid="${esc(r.id)}" maxlength="24" spellcheck="false" title="Rule name" />
+            ${statTag}
             <span class="dz-rule-live"><i></i><em>FIRING</em></span>
             <span class="dz-rule-tools">
               <button data-rmove="${esc(r.id)}" data-dir="-1" title="Move up" ${i === 0 ? "disabled" : ""}>↑</button>
@@ -527,19 +576,31 @@ export class Designer {
       })
       .join("");
 
+    const d = derive(b);
+    const fallthrough = stats && stats.total > 0 ? Math.round(((stats.rules.default ?? 0) / stats.total) * 100) : null;
     return `
+      <section class="dz-sec">
+        <header class="dz-sec-head-row"><div><h2>Tuning</h2><p>Every ⚙ sweeps one number through the headless sim with the current roster and shows which value wins most. Rules show how often they fired in the last quick sim.</p></div>
+          <div class="dz-sec-actions">
+            <button data-a="sim" title="Run the quick sim to get firing stats">⚗ Quick sim</button>
+            <button data-a="ab" title="Run the sim twice: this brain as edited vs. the stock brain for this weapon, same body">⚖ A/B vs stock brain</button>
+            <button data-a="reset-brain" class="dz-ghost" title="Reload the stock baseline rules and targeting for this weapon">↺ Stock rules</button>
+          </div>
+        </header>
+        ${stats ? `<div class="dz-note">Last quick sim: ${stats.total} baseline decisions for ${esc(stats.name)} over ${this.lastSim!.result.matches} matches${fallthrough ? `, <b>${fallthrough}%</b> fell through to the default Engage` : ""}.</div>` : `<div class="dz-note">Run a quick sim to see how often each rule fires.</div>`}
+      </section>
       <section class="dz-sec">
         <header><h2>Targeting policy</h2><p>Who the bot focuses on when a rule says "per targeting policy". Rules can override it.</p></header>
         <div class="dz-policy">
           <label>prefer
             <select class="dz-sel" data-tk="prefer"><option value="nearest" ${t.prefer === "nearest" ? "selected" : ""}>nearest opponent</option><option value="weakest" ${t.prefer === "weakest" ? "selected" : ""}>weakest opponent</option></select>
           </label>
-          <label>finish off the weakest below <input type="range" min="0" max="1" step="0.05" value="${t.finishBelow}" data-tk="finishBelow" /><output>${Math.round(t.finishBelow * 100)}% hp</output></label>
-          <label>if at most <input type="range" min="0" max="12" step="0.5" value="${t.finishWithin}" data-tk="finishWithin" /><output>${t.finishWithin} m</output> farther than the nearest</label>
+          <label>finish off the weakest below <input type="range" min="0" max="1" step="0.05" value="${t.finishBelow}" data-tk="finishBelow" /><output>${Math.round(t.finishBelow * 100)}% hp</output><button class="dz-tune" data-tune="tk|finishBelow" title="Tune in the sim">⚙</button></label>
+          <label>if at most <input type="range" min="0" max="12" step="0.5" value="${t.finishWithin}" data-tk="finishWithin" /><output>${t.finishWithin} m</output> farther than the nearest<button class="dz-tune" data-tune="tk|finishWithin" title="Tune in the sim">⚙</button></label>
         </div>
       </section>
       <section class="dz-sec">
-        <header><h2>Decision tree</h2><p>Rules are tried top to bottom; the first whose conditions all hold fires. The baseline brain runs this every 0.45 s. With a match running, conditions light up green or red for this bot and the firing rule glows.</p></header>
+        <header><h2>Decision tree</h2><p>Rules are tried top to bottom; the first whose conditions all hold fires. This bot's brain runs it every ${Math.round(d.cadence * 1000)} ms (sensors level ${b.levels.sensors}). With a match running, conditions light up green or red for this bot and the firing rule glows.</p></header>
         <div class="dz-rules">${rules}</div>
         <button class="dz-add big" data-radd>+ Add rule</button>
       </section>`;
@@ -548,6 +609,15 @@ export class Designer {
   private bindBaseline() {
     const el = this.editorEl;
     const L = this.b.logic;
+    el.querySelector<HTMLButtonElement>('[data-a="sim"]')!.onclick = () => void this.simulate();
+    el.querySelector<HTMLButtonElement>('[data-a="ab"]')!.onclick = () => void this.abTest();
+    el.querySelector<HTMLButtonElement>('[data-a="reset-brain"]')!.onclick = () => {
+      const stock = stockBuild(this.b.kind).logic;
+      this.b.logic.rules = stock.rules;
+      this.b.logic.targeting = stock.targeting;
+      this.changed(true);
+      this.cb.toast(`${this.b.name}: stock ${WEAPONS[this.b.kind].label.toLowerCase()} rules loaded`);
+    };
     el.querySelectorAll<HTMLSelectElement | HTMLInputElement>("[data-tk]").forEach((inp) => {
       const k = inp.dataset.tk as keyof typeof L.targeting;
       const out = inp.parentElement?.querySelector("output");
@@ -688,7 +758,9 @@ export class Designer {
       .join("");
     return `
       <section class="dz-sec">
-        <header><h2>Questions Jev is asked</h2><p>Every decision is one request with these questions fanned out. <code>{name}</code> and <code>{weapon}</code> fill in. Jev only sees words, never numbers.</p></header>
+        <header class="dz-sec-head-row"><div><h2>Questions Jev is asked</h2><p>Every decision is one request with these questions fanned out. <code>{name}</code> and <code>{weapon}</code> fill in. Jev only sees words, never numbers.</p></div>
+          <div class="dz-sec-actions"><button data-a="reset-jev" class="dz-ghost" title="Reload the stock prompts, technique descriptions and gates for this weapon">↺ Stock Jev brain</button></div>
+        </header>
         <label class="dz-ta-label">maneuver · Choice over the techniques offered right now</label>
         <textarea class="dz-ta" data-prompt="maneuverPrompt" rows="4" maxlength="700" spellcheck="false">${esc(J.maneuverPrompt)}</textarea>
         <label class="dz-ta-label">target · Choice over the living opponents</label>
@@ -714,6 +786,13 @@ export class Designer {
   private bindJev() {
     const el = this.editorEl;
     const J = this.b.logic.jev;
+    el.querySelector<HTMLButtonElement>('[data-a="reset-jev"]')!.onclick = () => {
+      const stock = stockBuild(this.b.kind).logic.jev;
+      this.b.logic.jev = { ...stock, maneuverPrompt: STOCK_PROMPTS.maneuverPrompt, targetPrompt: STOCK_PROMPTS.targetPrompt, dangerPrompt: STOCK_PROMPTS.dangerPrompt };
+      for (const m of this.b.techniques) if (!this.b.logic.jev.techniques[m]) this.b.logic.jev.techniques[m] = defaultTechniqueLogic(m, this.b.kind);
+      this.changed(true);
+      this.cb.toast(`${this.b.name}: stock Jev brain loaded`);
+    };
     el.querySelectorAll<HTMLTextAreaElement>("[data-prompt]").forEach((ta) => {
       ta.oninput = () => {
         J[ta.dataset.prompt as "maneuverPrompt" | "targetPrompt" | "dangerPrompt"] = ta.value;
@@ -774,8 +853,158 @@ export class Designer {
     });
     el.querySelectorAll<HTMLButtonElement>("[data-tech]").forEach((b) => (b.onclick = () => this.toggleTechnique(b.dataset.tech as Maneuver)));
     this.bindConditions(el);
+    el.querySelectorAll<HTMLButtonElement>("[data-tune]").forEach((btn) => (btn.onclick = () => void this.startTune(btn.dataset.tune!)));
     if (this.tab === "baseline") this.bindBaseline();
     if (this.tab === "jev") this.bindJev();
+    if (this.tab === "library") this.bindLibrary();
+  }
+
+  /* ---------------------------------------------------------------- LIBRARY tab ------------------ */
+
+  private htmlLibrary(): string {
+    const lib = this.library;
+    const when = (t: number) => {
+      const d = new Date(t);
+      return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+    };
+    const card = (b: BotBuild, actions: string, sub: string) => {
+      const c = costOf(b);
+      const d = derive(b);
+      return `<article class="dz-lib-card" style="--c:${hex(b.color)}">
+        <span class="dz-lib-icon">${WEAPON_ICON[b.kind]}</span>
+        <div class="dz-lib-text">
+          <b>${esc(b.name)}</b>
+          <small>${WEAPONS[b.kind].label} · ${c.total}/${BUDGET} pts · ${d.weightClass}</small>
+          <em>${esc(sub || b.tagline)}</em>
+        </div>
+        <div class="dz-lib-actions">${actions}</div>
+      </article>`;
+    };
+    const stock = STOCK_ORDER.map((k) => card(STOCK_BUILDS[k], `<button data-lstock="${k}" class="primary-ish">Load into slot ${this.slot + 1}</button>`, STOCK_BUILDS[k].tagline)).join("");
+    const saved = lib.builds.length
+      ? lib.builds
+          .map((sb) =>
+            card(
+              sb.build,
+              `<button data-lload="${sb.id}" class="primary-ish">Load into slot ${this.slot + 1}</button><button data-lexport="${sb.id}" title="Download as JSON">⇩</button><button data-ldel="${sb.id}" class="danger" title="Delete from the library">✕</button>`,
+              `saved ${when(sb.savedAt)} · ${sb.build.techniques.length} techniques · ${sb.build.logic.rules.length} rules`,
+            ),
+          )
+          .join("")
+      : `<div class="dz-empty">Nothing saved yet. <b>💾 Save build</b> under the turntable stores the selected slot here under its callsign.</div>`;
+    const rosters = lib.rosters.length
+      ? lib.rosters
+          .map(
+            (r) => `<article class="dz-lib-roster">
+          <div class="dz-lib-text"><b>${esc(r.name)}</b><small>saved ${when(r.savedAt)}</small>
+            <div class="dz-lib-mini">${r.builds.map((b) => `<span style="--c:${hex(b.color)}">${WEAPON_ICON[b.kind]}<i>${esc(b.name)}</i></span>`).join("")}</div></div>
+          <div class="dz-lib-actions"><button data-rload="${r.id}" class="primary-ish">Load roster</button><button data-rdel="${r.id}" class="danger" title="Delete">✕</button></div>
+        </article>`,
+          )
+          .join("")
+      : `<div class="dz-empty">No saved rosters. Name the current four and save them as a set.</div>`;
+    return `
+      <section class="dz-sec">
+        <header class="dz-sec-head-row"><div><h2>Saved builds</h2><p>Your library. Loading replaces slot ${this.slot + 1} (${esc(this.b.name)}) body and brains; deploy to fight with it.</p></div>
+          <div class="dz-sec-actions"><button data-a="lib-import" title="Add the builds from a garage or library export to the library">⇪ Import to library</button><button data-a="lib-export" title="Download the whole library as JSON">⇩ Export library</button></div>
+        </header>
+        <div class="dz-lib-grid">${saved}</div>
+      </section>
+      <section class="dz-sec">
+        <header class="dz-sec-head-row"><div><h2>Rosters</h2><p>Whole line-ups of four. Loading one replaces all four slots.</p></div>
+          <div class="dz-sec-actions dz-roster-save"><input id="dz-roster-name" class="dz-text" placeholder="roster name" maxlength="40" spellcheck="false" /><button data-a="roster-save">💾 Save current roster</button></div>
+        </header>
+        <div class="dz-lib-rosters">${rosters}</div>
+      </section>
+      <section class="dz-sec">
+        <header><h2>Stock bots</h2><p>One per weapon system, tuned to fight each other evenly. Load any into any slot: two saws, four rams, whatever you like.</p></header>
+        <div class="dz-lib-grid">${stock}</div>
+      </section>
+      <input type="file" accept="application/json" id="dz-lib-file" hidden />`;
+  }
+
+  private bindLibrary() {
+    const el = this.editorEl;
+    const loadInto = (b: BotBuild, label: string) => {
+      this.builds[this.slot] = normalizeBuild(cloneBuild(b), stockBuild, this.b.id);
+      this.rebuildPreview();
+      this.renderPreviewPanel();
+      this.changed(true);
+      this.cb.toast(`${label} loaded into slot ${this.slot + 1}. Deploy to fight with it.`);
+    };
+    el.querySelectorAll<HTMLButtonElement>("[data-lstock]").forEach((btn) => (btn.onclick = () => loadInto(STOCK_BUILDS[btn.dataset.lstock as BotKind], `Stock ${STOCK_BUILDS[btn.dataset.lstock as BotKind].name}`)));
+    el.querySelectorAll<HTMLButtonElement>("[data-lload]").forEach((btn) => {
+      btn.onclick = () => {
+        const sb = this.library.builds.find((x) => x.id === btn.dataset.lload);
+        if (sb) loadInto(sb.build, sb.build.name);
+      };
+    });
+    el.querySelectorAll<HTMLButtonElement>("[data-lexport]").forEach((btn) => {
+      btn.onclick = () => {
+        const sb = this.library.builds.find((x) => x.id === btn.dataset.lexport);
+        if (sb) download(`${sb.build.name.toLowerCase().replace(/\s+/g, "-")}.json`, JSON.stringify({ version: 1, builds: [sb.build] }, null, 2));
+      };
+    });
+    el.querySelectorAll<HTMLButtonElement>("[data-ldel]").forEach((btn) => {
+      btn.onclick = () => {
+        this.library.removeBuild(btn.dataset.ldel!);
+        this.renderEditor();
+      };
+    });
+    el.querySelectorAll<HTMLButtonElement>("[data-rload]").forEach((btn) => {
+      btn.onclick = () => {
+        const r = this.library.rosters.find((x) => x.id === btn.dataset.rload);
+        if (!r) return;
+        for (let i = 0; i < this.builds.length; i++) if (r.builds[i]) this.builds[i] = normalizeBuild(cloneBuild(r.builds[i]), stockBuild, `slot-${i}`);
+        this.cb.onChange(this.builds);
+        this.renderAll();
+        this.cb.toast(`Roster "${r.name}" loaded. Deploy to fight with it.`);
+      };
+    });
+    el.querySelectorAll<HTMLButtonElement>("[data-rdel]").forEach((btn) => {
+      btn.onclick = () => {
+        this.library.removeRoster(btn.dataset.rdel!);
+        this.renderEditor();
+      };
+    });
+    const nameInput = el.querySelector<HTMLInputElement>("#dz-roster-name")!;
+    const saveRoster = () => {
+      const { saved, replaced } = this.library.saveRoster(nameInput.value, this.builds);
+      this.cb.toast(`Roster "${saved.name}" ${replaced ? "updated" : "saved"}`);
+      this.renderEditor();
+    };
+    el.querySelector<HTMLButtonElement>('[data-a="roster-save"]')!.onclick = saveRoster;
+    nameInput.onkeydown = (ev) => {
+      if (ev.key === "Enter") saveRoster();
+    };
+    el.querySelector<HTMLButtonElement>('[data-a="lib-export"]')!.onclick = () => download("s1-library.json", this.library.exportJson());
+    const file = el.querySelector<HTMLInputElement>("#dz-lib-file")!;
+    el.querySelector<HTMLButtonElement>('[data-a="lib-import"]')!.onclick = () => file.click();
+    file.onchange = () => {
+      const f = file.files?.[0];
+      if (!f) return;
+      void f.text().then((t) => {
+        try {
+          const raw = JSON.parse(t) as { builds?: unknown[]; rosters?: unknown[] } | unknown[];
+          const list = Array.isArray(raw) ? raw : (raw.builds ?? []);
+          // A library export wraps builds as { id, savedAt, build }; a garage export is bare builds.
+          const builds = list.map((x) => (x && typeof x === "object" && "build" in (x as object) ? (x as { build: unknown }).build : x));
+          const n = this.library.addBuilds(builds);
+          if (!Array.isArray(raw) && Array.isArray(raw.rosters)) for (const r of raw.rosters as { name?: string; builds?: unknown[] }[]) if (Array.isArray(r.builds)) this.library.saveRoster(String(r.name ?? "Imported"), r.builds.map((b, i) => normalizeBuild(b, stockBuild, `slot-${i}`)));
+          this.cb.toast(`Added ${n} build${n === 1 ? "" : "s"} to the library`);
+          this.renderEditor();
+        } catch (err) {
+          this.cb.toast(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      });
+      file.value = "";
+    };
+  }
+
+  private saveCurrentBuild() {
+    const { saved, replaced } = this.library.saveBuild(this.b);
+    this.cb.toast(`${saved.build.name} ${replaced ? "updated in" : "saved to"} the library`);
+    if (this.tab === "library") this.renderEditor();
   }
 
   /* ---------------------------------------------------------------- SPEC sheet ------------------- */
@@ -830,7 +1059,31 @@ export class Designer {
             ["recharge", `${T.flipper.cooldown.toFixed(1)} s`],
             ["critical", "flips toward a wall"],
           ];
+        case "spinner":
+          return [
+            ["hit", `${T.spinner.baseDamage}–${T.spinner.baseDamage + T.spinner.spinDamage} dmg, launches`],
+            ["spin-up", `${T.spinner.spinUpSeconds.toFixed(1)} s`],
+            ["spin lost per hit", `${Math.round(T.spinner.biteCost * 100)}%`],
+            ["turn drag at speed", `−${Math.round(T.spinner.gyroDrag * 100)}%`],
+            ["critical", "a target closing on the bar"],
+          ];
+        case "torch":
+          return [
+            ["flame", `${T.torch.dps} dmg/s, ignores ${Math.round(T.torch.pierce * 100)}% of armor`],
+            ["reach", `${T.torch.range.toFixed(1)} m cone`],
+            ["fuel", `${T.torch.burnSeconds.toFixed(1)} s of flame · ${T.torch.refillSeconds.toFixed(1)} s refill`],
+            ["afterburn", `${T.torch.burnDps} dmg/s for ${T.torch.burnTime} s`],
+            ["critical", "flames on the target's back"],
+          ];
+        case "ram":
+          return [
+            ["slam", `${T.ram.hitMul.toFixed(2)}× closing speed`],
+            ["boost", `+${Math.round((T.ram.boostMul - 1) * 100)}% speed for ${T.ram.burst.toFixed(1)} s`],
+            ["refill", `${T.ram.refill.toFixed(1)} s`],
+            ["critical", "pinned against a wall, or stunned"],
+          ];
       }
+      return [] as string[][];
     })().map(([k, v]) => `<div class="dz-kv"><span>${k}</span><b>${v}</b></div>`).join("");
 
     this.specEl.innerHTML = `
@@ -845,7 +1098,11 @@ export class Designer {
         ${stat("top speed", d.maxSpeed, stock.maxSpeed, 9, (x) => `${x.toFixed(1)}`)}
         ${stat("acceleration", d.accel, stock.accel, 20, (x) => `${x.toFixed(1)}`)}
         ${stat("turn rate", d.turnRate, stock.turnRate, 6, (x) => `${x.toFixed(2)}`)}
-        ${stat("flip resistance", d.flipResist, stock.flipResist, 0.6, (x) => `${Math.round(x * 100)}%`)}
+        ${stat("flip resist", d.flipResist, stock.flipResist, 0.8, (x) => `${Math.round(x * 100)}%`)}
+        ${stat("knock resist", d.knockResist, stock.knockResist, 0.4, (x) => `${Math.round(x * 100)}%`)}
+        ${stat("stun resist", d.stunResist, stock.stunResist, 0.6, (x) => `${Math.round(x * 100)}%`)}
+        ${stat("impact resist", d.impactResist, stock.impactResist, 0.35, (x) => `${Math.round(x * 100)}%`)}
+        ${stat("reaction", d.cadence, stock.cadence, 0.5, (x) => `${Math.round(x * 1000)}ms`, true)}
       </div>
       <div class="dz-kvs">${weaponRows}</div>
       ${problems.length ? `<ul class="dz-problems">${problems.map((p) => `<li class="${p.level}">${esc(p.text)}</li>`).join("")}</ul>` : `<div class="dz-ok">Build is legal and ready to deploy.</div>`}
@@ -857,41 +1114,275 @@ export class Designer {
             </div>`
           : ""
       }
+      <div class="dz-tune-panel" id="dz-tune">${this.htmlTune()}</div>
+      <div class="dz-ab-panel" id="dz-ab">${this.htmlAb()}</div>
       <div class="dz-sim" id="dz-sim">${this.simHtml}</div>`;
+    this.bindTunePanel();
   }
 
   /* ---------------------------------------------------------------- quick sim -------------------- */
+
+  /** Roster defs for a sim, with the arena names each slot will fight under. */
+  private simDefs(builds = this.builds) {
+    const named = builds.map((b) => uniqueNamed(cloneBuild(b), builds));
+    return { defs: named.map(defFromBuild), names: named.map((b) => b.name) };
+  }
 
   private async simulate() {
     if (this.simRunning) return;
     this.simRunning = true;
     const N = 12;
-    const defs = this.builds.map((b) => defFromBuild(uniqueNamed(cloneBuild(b), this.builds)));
+    const { defs, names } = this.simDefs();
     const colors = Object.fromEntries(defs.map((d) => [d.name, hex(d.color)]));
-    const paint = (done: number, wins: Record<string, number>, lengths: number[]) => {
+    const paint = (done: number, r: QuickSimResult | null) => {
       const rows = defs
         .map((d) => {
-          const w = wins[d.name] ?? 0;
-          return `<div class="dz-sim-row"><span style="color:${colors[d.name]}">${esc(d.name)}</span><i><b style="width:${done ? (w / done) * 100 : 0}%;background:${colors[d.name]}"></b></i><em>${w}</em></div>`;
+          const w = r?.wins[d.name] ?? 0;
+          const pb = r?.perBot[d.name];
+          const dmg = pb && done ? Math.round(pb.damage / done) : 0;
+          return `<div class="dz-sim-row"><span style="color:${colors[d.name]}">${esc(d.name)}</span><i><b style="width:${done ? (w / done) * 100 : 0}%;background:${colors[d.name]}"></b></i><em>${w}</em><small>${dmg} dmg</small></div>`;
         })
         .join("");
-      this.simHtml = `<div class="dz-sim-head"><b>QUICK SIM</b><span>${done}/${N} matches · baseline brains${lengths.length ? ` · median ${median(lengths).toFixed(0)} s` : ""}</span></div>${rows}`;
+      this.simHtml = `<div class="dz-sim-head"><b>QUICK SIM</b><span>${done}/${N} matches · baseline brains${r?.lengths.length ? ` · median ${median(r.lengths).toFixed(0)} s` : ""}</span></div>${rows}`;
       const el = this.root.querySelector("#dz-sim");
       if (el) el.innerHTML = this.simHtml;
     };
-    paint(0, {}, []);
+    paint(0, null);
     try {
-      await quickSim(defs, {
+      const result = await quickSim(defs, {
         matches: N,
         seed: Math.floor(Math.random() * 10000),
         onMatch: (i, r) => {
-          paint(i + 1, r.wins, r.lengths);
+          paint(i + 1, r);
           return new Promise((res) => setTimeout(res, 0));
         },
       });
+      this.lastSim = { result, names };
+      if (this.tab === "baseline") this.renderEditor();
     } finally {
       this.simRunning = false;
     }
+  }
+
+  /** Rule firing counts for the selected slot from the last quick sim, if that sim still matches the roster. */
+  private ruleStats(): { name: string; total: number; rules: Record<string, number> } | null {
+    if (!this.lastSim) return null;
+    const name = this.lastSim.names[this.slot];
+    const pb = this.lastSim.result.perBot[name];
+    if (!pb) return null;
+    return { name, total: pb.decisions, rules: this.lastSim.result.rules[name] ?? {} };
+  }
+
+  /* ---------------------------------------------------------------- tuner ----------------------- */
+
+  /** Resolve a `data-tune` key ("cond|rule:<id>|<idx>" or "tk|<key>") into something the sweep can read and write. */
+  private tunable(key: string): Tunable | null {
+    const parts = key.split("|");
+    if (parts[0] === "cond") {
+      const [, path, idxS] = parts;
+      const idx = Number(idxS);
+      const [, ruleId] = path.split(":");
+      const list = (b: BotBuild) => b.logic.rules.find((r) => r.id === ruleId)?.when;
+      const c = list(this.b)?.[idx];
+      if (!c) return null;
+      const subj = SUBJECT_BY_KEY[c.s];
+      const r = rangeFor(subj.type);
+      return {
+        key,
+        label: `${ruleId}: ${subj.label} ${c.op} …`,
+        min: r.min,
+        max: r.max,
+        step: r.step,
+        fmt: (v) => fmtValue(subj.type, v),
+        get: (b) => {
+          const cc = list(b)?.[idx];
+          return cc ? Number(cc.v) : undefined;
+        },
+        set: (b, v) => {
+          const cc = list(b)?.[idx];
+          if (cc) cc.v = v;
+        },
+      };
+    }
+    if (parts[0] === "tk") {
+      const k = parts[1] as "finishBelow" | "finishWithin";
+      const frac = k === "finishBelow";
+      return {
+        key,
+        label: frac ? "finish off the weakest below … hp" : "… farther than the nearest",
+        min: 0,
+        max: frac ? 1 : 12,
+        step: frac ? 0.05 : 0.5,
+        fmt: (v) => (frac ? `${Math.round(v * 100)}%` : `${v} m`),
+        get: (b) => b.logic.targeting[k],
+        set: (b, v) => {
+          b.logic.targeting[k] = v;
+        },
+      };
+    }
+    return null;
+  }
+
+  private async startTune(key: string) {
+    if (this.tune?.running) return;
+    const t = this.tunable(key);
+    if (!t) return;
+    const current = t.get(this.b) ?? t.min;
+    // Evenly spaced candidates across the subject's range, snapped to its step, with the current value swapped in
+    // for its nearest neighbour so "as is" is always one of the bars.
+    const values: number[] = [];
+    for (let i = 0; i < TUNE_STEPS; i++) {
+      const raw = t.min + ((t.max - t.min) * i) / (TUNE_STEPS - 1);
+      values.push(Math.round(Math.round(raw / t.step) * t.step * 1000) / 1000);
+    }
+    let nearest = 0;
+    values.forEach((v, i) => {
+      if (Math.abs(v - current) < Math.abs(values[nearest] - current)) nearest = i;
+    });
+    values[nearest] = current;
+    const N = 10;
+    const slot = this.slot;
+    this.tune = { t, slot, values, wins: values.map(() => 0), damage: values.map(() => 0), done: values.map(() => 0), n: N, running: true, current };
+    this.renderTunePanel();
+    const seed = 1000 + Math.floor(Math.random() * 1000);
+    try {
+      for (let vi = 0; vi < values.length; vi++) {
+        const roster = this.builds.map(cloneBuild);
+        t.set(roster[slot], values[vi]);
+        const { defs, names } = this.simDefs(roster);
+        const me = names[slot];
+        await quickSim(defs, {
+          matches: N,
+          seed,
+          onMatch: (i, r) => {
+            if (!this.tune || this.tune.t.key !== key) return;
+            this.tune.done[vi] = i + 1;
+            this.tune.wins[vi] = r.wins[me] ?? 0;
+            this.tune.damage[vi] = r.perBot[me]?.damage ?? 0;
+            this.renderTunePanel();
+            return new Promise((res) => setTimeout(res, 0));
+          },
+        });
+        if (!this.tune || this.tune.t.key !== key) return;
+      }
+    } finally {
+      if (this.tune && this.tune.t.key === key) {
+        this.tune.running = false;
+        this.renderTunePanel();
+      }
+    }
+  }
+
+  private htmlTune(): string {
+    const T = this.tune;
+    if (!T) return "";
+    const best = T.wins.reduce((bi, w, i) => (w > T.wins[bi] || (w === T.wins[bi] && T.damage[i] > T.damage[bi]) ? i : bi), 0);
+    const total = T.done.reduce((a, b) => a + b, 0);
+    const bars = T.values
+      .map((v, i) => {
+        const n = T.done[i];
+        const pct = n ? (T.wins[i] / n) * 100 : 0;
+        const cls = [v === T.current ? "current" : "", !T.running && i === best ? "best" : "", n < T.n ? "pending" : ""].join(" ");
+        return `<button class="dz-tune-bar ${cls}" data-tv="${i}" title="${T.wins[i]}/${n} wins · ${Math.round(T.damage[i] / Math.max(1, n))} dmg per match. Click to apply.">
+          <i style="height:${Math.max(3, pct)}%"></i><em>${T.t.fmt(v)}</em><b>${n ? `${T.wins[i]}/${n}` : "…"}</b>
+        </button>`;
+      })
+      .join("");
+    return `<div class="dz-sim-head"><b>TUNER</b><span>${esc(T.t.label)}</span><small>${T.running ? `sweeping… ${total}/${T.n * T.values.length} matches` : `done · best ${T.t.fmt(T.values[best])} (${T.wins[best]}/${T.n})`}</small></div>
+      <div class="dz-tune-bars">${bars}</div>
+      <div class="dz-tune-foot"><span>wins for ${esc(this.builds[T.slot].name)} out of ${T.n}, same seeds every bar. Click a bar to apply that value.</span><button data-a="tune-close" class="dz-x" title="Dismiss">×</button></div>`;
+  }
+
+  private renderTunePanel() {
+    const el = this.specEl.querySelector("#dz-tune");
+    if (el) {
+      el.innerHTML = this.htmlTune();
+      this.bindTunePanel();
+    }
+  }
+
+  private bindTunePanel() {
+    const el = this.specEl.querySelector("#dz-tune");
+    if (!el || !this.tune) return;
+    el.querySelectorAll<HTMLButtonElement>("[data-tv]").forEach((btn) => {
+      btn.onclick = () => {
+        const T = this.tune!;
+        const v = T.values[Number(btn.dataset.tv)];
+        T.t.set(this.builds[T.slot], v);
+        T.current = v;
+        this.slot = T.slot;
+        this.changed(true);
+        this.cb.toast(`${T.t.label.replace("…", T.t.fmt(v))}`);
+      };
+    });
+    const close = el.querySelector<HTMLButtonElement>('[data-a="tune-close"]');
+    if (close)
+      close.onclick = () => {
+        this.tune = null;
+        this.renderTunePanel();
+      };
+    const ab = this.specEl.querySelector<HTMLButtonElement>('#dz-ab [data-a="ab-close"]');
+    if (ab)
+      ab.onclick = () => {
+        this.ab = null;
+        const abEl = this.specEl.querySelector("#dz-ab");
+        if (abEl) abEl.innerHTML = "";
+      };
+  }
+
+  /** Same roster, same seeds, two brains for this slot: as edited vs the stock rules for its weapon. */
+  private async abTest() {
+    if (this.ab?.running) return;
+    const N = 12;
+    const slot = this.slot;
+    this.ab = { slot, n: N, edited: 0, stock: 0, done: 0, running: true };
+    const paint = () => {
+      const el = this.specEl.querySelector("#dz-ab");
+      if (el) {
+        el.innerHTML = this.htmlAb();
+        this.bindTunePanel();
+      }
+    };
+    paint();
+    const seed = 2000 + Math.floor(Math.random() * 1000);
+    const run = async (builds: BotBuild[], into: "edited" | "stock") => {
+      const { defs, names } = this.simDefs(builds);
+      const me = names[slot];
+      await quickSim(defs, {
+        matches: N,
+        seed,
+        onMatch: (i, r) => {
+          if (!this.ab) return;
+          this.ab[into] = r.wins[me] ?? 0;
+          this.ab.done = (into === "stock" ? N : 0) + i + 1;
+          paint();
+          return new Promise((res) => setTimeout(res, 0));
+        },
+      });
+    };
+    try {
+      await run(this.builds.map(cloneBuild), "edited");
+      const stockRoster = this.builds.map(cloneBuild);
+      const st = stockBuild(this.b.kind).logic;
+      stockRoster[slot].logic = { ...st, jev: stockRoster[slot].logic.jev };
+      await run(stockRoster, "stock");
+    } finally {
+      if (this.ab) {
+        this.ab.running = false;
+        paint();
+      }
+    }
+  }
+
+  private htmlAb(): string {
+    const A = this.ab;
+    if (!A) return "";
+    const name = this.builds[A.slot].name;
+    const row = (label: string, w: number, cls: string) => `<div class="dz-sim-row"><span class="${cls}">${label}</span><i><b style="width:${(w / A.n) * 100}%"></b></i><em>${w}</em><small>/ ${A.n}</small></div>`;
+    const verdict = A.running ? `running… ${A.done}/${A.n * 2}` : A.edited > A.stock ? "your edits win more" : A.edited < A.stock ? "stock rules win more" : "dead heat";
+    return `<div class="dz-sim-head"><b>A/B</b><span>${esc(name)}: edited brain vs stock ${WEAPONS[this.builds[A.slot].kind].label.toLowerCase()} rules</span><small>${verdict}</small></div>
+      ${row("edited", A.edited, "ab-edited")}${row("stock", A.stock, "ab-stock")}
+      <div class="dz-tune-foot"><span>same body, same roster, same seeds; only the baseline rules differ.</span><button data-a="ab-close" class="dz-x" title="Dismiss">×</button></div>`;
   }
 
   /* ---------------------------------------------------------------- live trace ------------------- */
@@ -1069,6 +1560,21 @@ export class Designer {
         w.flipAnim = cyc < 0.5 ? 1 - cyc / 0.5 : 0;
         break;
       }
+      case "spinner":
+        w.spin = 1;
+        break;
+      case "torch": {
+        const cyc = this.pTime % 4.5;
+        w.firing = cyc < 1.6;
+        w.spin = w.firing ? 1 - cyc / T.torch.burnSeconds : Math.min(1, (cyc - 1.6) / T.torch.refillSeconds + (1 - 1.6 / T.torch.burnSeconds));
+        break;
+      }
+      case "ram": {
+        const cyc = this.pTime % 3.4;
+        w.boosting = cyc > 1.2 && cyc < 2.1;
+        w.spin = w.boosting ? 1 - (cyc - 1.2) / 0.9 : cyc >= 2.1 ? Math.min(1, (cyc - 2.1) / 1.3) : 1;
+        break;
+      }
     }
     this.pMesh.update(dt, this.pTime, () => undefined);
     this.pRenderer.render(this.pScene, this.pCamera);
@@ -1076,6 +1582,15 @@ export class Designer {
 }
 
 /* ---------------------------------------------------------------- helpers ---------------------- */
+
+function download(filename: string, json: string) {
+  const blob = new Blob([json], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
 
 function rangeFor(t: SubjectType): { min: number; max: number; step: number; def: number } {
   switch (t) {

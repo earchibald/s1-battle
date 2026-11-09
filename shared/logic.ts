@@ -59,6 +59,10 @@ export function subjectValue(key: SubjectKey, c: EvalContext): CondValue | "none
       return f.weaponReady;
     case "me.holding":
       return f.holding !== null;
+    case "me.burning":
+      return f.burning;
+    case "target.burning":
+      return !!t?.burning;
     case "target.dist":
       return t ? t.dist : Infinity;
     case "target.hp":
@@ -245,6 +249,7 @@ export function interpretAnswers(build: BotBuild, sense: BotSense, answers: Reco
     target = alive.includes(tgt.choice) ? tgt.choice : null;
   }
   const holdingManeuvers: Maneuver[] = ["crush", "drag_to_pit", "drag_to_saws", "release"];
+  // Shoving targets whoever the shove is aimed at; the holding rule below handles grabbers.
   if (sense.facts.holding && holdingManeuvers.includes(maneuver)) target = sense.facts.holding;
   if (!target && alive.length === 1) target = alive[0];
   if (!target && alive.length > 1) {
@@ -277,7 +282,20 @@ export function defFromBuild(build: BotBuild): BotDef {
     tagline: build.tagline,
     color: build.color,
     accent: build.accent,
-    stats: { hp: d.hp, mass: d.mass, maxSpeed: d.maxSpeed, accel: d.accel, turnRate: d.turnRate, armor: d.armor, radius: d.radius },
+    stats: {
+      hp: d.hp,
+      mass: d.mass,
+      maxSpeed: d.maxSpeed,
+      accel: d.accel,
+      turnRate: d.turnRate,
+      armor: d.armor,
+      radius: d.radius,
+      knockResist: d.knockResist,
+      stunResist: d.stunResist,
+      impactResist: d.impactResist,
+      cadence: d.cadence,
+      awareness: d.awareness,
+    },
     tuning: d.tuning,
     build,
     maneuvers,

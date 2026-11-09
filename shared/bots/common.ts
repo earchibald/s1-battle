@@ -23,6 +23,7 @@ export interface OpponentFacts {
   airborne: boolean;
   stunned: boolean;
   heldBy: string | null;
+  burning: boolean;
   /** Inside my weapon's reach cone right now. */
   inReach: boolean;
   /** Their weapon is ready, pointed at me, and they are close. */
@@ -37,6 +38,7 @@ export interface Facts {
   heldBy: string | null;
   airborne: boolean;
   stunned: boolean;
+  burning: boolean;
   pitOpen: boolean;
   pitDist: number;
   sawsUp: boolean;
@@ -59,6 +61,12 @@ export interface BotStats {
   /** Fraction of incoming damage shrugged off. */
   armor: number;
   radius: number;
+  knockResist: number;
+  stunResist: number;
+  impactResist: number;
+  /** Seconds between brain decisions. */
+  cadence: number;
+  awareness: number;
 }
 
 /** The sim's view of a bot. Always produced from a BotBuild by `defFromBuild`. */

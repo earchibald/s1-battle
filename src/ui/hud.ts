@@ -31,6 +31,9 @@ export const WEAPON_ICON: Record<string, string> = {
   hammer: `<svg viewBox="0 0 24 24"><path d="M4 20l8-8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><rect x="11" y="3" width="10" height="7" rx="1.5" transform="rotate(45 16 6.5)" fill="currentColor"/></svg>`,
   grabber: `<svg viewBox="0 0 24 24"><path d="M6 4c-3 4-3 9 0 13M18 4c3 4 3 9 0 13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M12 10v10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>`,
   flipper: `<svg viewBox="0 0 24 24"><path d="M3 18h18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M4 16L20 8" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><path d="M14 4l4 4-5 1" fill="currentColor"/></svg>`,
+  spinner: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2" fill="currentColor"/><path d="M3 12h18" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><path d="M3 12l3-2.5M21 12l-3 2.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M6 6.5a7.5 7.5 0 0 1 12 0M6 17.5a7.5 7.5 0 0 0 12 0" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2"/></svg>`,
+  torch: `<svg viewBox="0 0 24 24"><path d="M12 22c-4 0-7-3-7-6.5 0-3 2-5 3.5-7.5.5 2 1.5 3 2.5 3.5C11 9 11.5 5 13.5 2c2 3 5.5 6.5 5.5 11 0 4-3 9-7 9z" fill="currentColor"/><path d="M12 22c-2 0-3.5-1.5-3.5-3.5 0-2 1.5-3 2.5-4.5.5 1.5 1.5 2 2 2.5.5-1 .5-2.5 1-3.5 1 1.5 2 3 2 5 0 2.2-1.8 4-4 4z" fill="#16100a" opacity=".55"/></svg>`,
+  ram: `<svg viewBox="0 0 24 24"><path d="M3 19h14l4-7-4-7H3z" fill="currentColor"/><path d="M6 8v8M10 8v8" stroke="#16100a" stroke-width="1.6" opacity=".6"/><path d="M3 5v14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>`,
 };
 
 const MANEUVER_LABEL: Record<Maneuver, string> = {
@@ -47,6 +50,10 @@ const MANEUVER_LABEL: Record<Maneuver, string> = {
   crush: "CRUSH",
   release: "RELEASE",
   flip_now: "FLIP!",
+  burn: "BURN!",
+  ram_now: "RAM!",
+  shove_to_pit: "SHOVE → PIT",
+  shove_to_saws: "SHOVE → SAWS",
 };
 export const maneuverLabel = (m: Maneuver) => MANEUVER_LABEL[m] ?? m.toUpperCase();
 
@@ -287,11 +294,25 @@ export class Hud {
   }
 }
 
+function statusWeapon(bot: Bot): string {
+  switch (bot.kind) {
+    case "saw":
+      return `blade ${(bot.weapon.spin * 100).toFixed(0)}%`;
+    case "spinner":
+      return `bar ${(bot.weapon.spin * 100).toFixed(0)}%`;
+    case "ram":
+      return `boost ${(bot.weapon.spin * 100).toFixed(0)}%`;
+    default:
+      return bot.weaponReady ? "weapon ready" : "recharging";
+  }
+}
+
 function statusLine(bot: Bot): string {
   if (!bot.alive) return bot.eliminated === "pitted" ? "fell into the pit" : "wrecked";
-  if (bot.airborne) return "AIRBORNE";
+  if (bot.airborne) return bot.burn > 0 ? "AIRBORNE · burning" : "AIRBORNE";
   if (bot.heldBy) return `held by ${bot.heldBy.id}`;
-  if (bot.stun > 0) return "stunned";
+  if (bot.stun > 0) return bot.burn > 0 ? "stunned · burning" : "stunned";
+  if (bot.burn > 0 && bot.kind !== "torch") return `ON FIRE · ${statusWeapon(bot)}`;
   if (bot.holding) return `holding ${bot.holding.id} (${Math.max(0, bot.def.tuning.grabber.maxHold - bot.weapon.holdTime).toFixed(1)}s)`;
   switch (bot.kind) {
     case "saw":
@@ -302,6 +323,12 @@ function statusLine(bot: Bot): string {
       return bot.weaponReady ? "jaws ready" : `recharging ${bot.weapon.cooldown.toFixed(1)}s`;
     case "flipper":
       return bot.weaponReady ? "flipper charged" : `recharging ${bot.weapon.cooldown.toFixed(1)}s`;
+    case "spinner":
+      return `bar ${(bot.weapon.spin * 100).toFixed(0)}%`;
+    case "torch":
+      return `${bot.weapon.firing ? "FLAME ON · " : ""}fuel ${(bot.weapon.spin * 100).toFixed(0)}%${bot.burn > 0 ? " · burning" : ""}`;
+    case "ram":
+      return `${bot.weapon.boosting ? "BOOSTING · " : ""}boost ${(bot.weapon.spin * 100).toFixed(0)}%`;
   }
 }
 export { ARENA };

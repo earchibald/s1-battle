@@ -74,15 +74,31 @@ function myWeaponState(bot: Bot): string {
       return w.cooldown > 0 ? `jaws recharging (${Math.ceil(w.cooldown)}s)` : "jaws open and ready";
     case "flipper":
       return w.cooldown > 0 ? `flipper recharging (${Math.ceil(w.cooldown)}s)` : "flipper charged and ready";
+    case "spinner":
+      if (w.spin > 0.9) return "bar at full speed";
+      if (w.spin > 0.6) return "bar spinning fast, nearly full speed";
+      if (w.spin > 0.3) return "bar spinning up, about half speed";
+      return "bar barely turning";
+    case "torch":
+      if (w.firing) return `flame on, ${Math.round(w.spin * 100)}% fuel left`;
+      if (w.spin > 0.7) return "fuel tank full, flame ready";
+      if (w.spin > 0.25) return `about ${Math.round(w.spin * 100)}% fuel, flame ready`;
+      return "fuel nearly out, refilling";
+    case "ram":
+      if (w.boosting) return "boosting";
+      if (w.spin > 0.9) return "boost reserve full";
+      if (w.spin > 0.5) return "boost reserve about half, ready";
+      return "boost reserve low, refilling";
   }
 }
 function statusWords(bot: Bot): string {
   if (!bot.alive) return bot.eliminated === "pitted" ? "gone, fell in the pit" : "destroyed";
-  if (bot.airborne) return "airborne, tumbling";
-  if (bot.heldBy) return `held in ${bot.heldBy.id}'s jaws, cannot drive`;
-  if (bot.stun > 0) return "stunned, not moving";
-  if (bot.holding) return `holding ${bot.holding.id} in the jaws`;
-  return "driving normally";
+  const fire = bot.burn > 0 ? ", on fire" : "";
+  if (bot.airborne) return "airborne, tumbling" + fire;
+  if (bot.heldBy) return `held in ${bot.heldBy.id}'s jaws, cannot drive` + fire;
+  if (bot.stun > 0) return "stunned, not moving" + fire;
+  if (bot.holding) return `holding ${bot.holding.id} in the jaws` + fire;
+  return "driving normally" + fire;
 }
 function theirWeaponState(o: Bot): string {
   const w = o.weapon;
@@ -97,12 +113,27 @@ function theirWeaponState(o: Bot): string {
       return o.weaponReady ? "jaws open and ready to grab" : "jaws recharging";
     case "flipper":
       return o.weaponReady ? "flipper charged and ready" : "flipper recharging";
+    case "spinner":
+      return w.spin > 0.6 ? "bar spinning at speed, do not touch" : "bar slow, not dangerous yet";
+    case "torch":
+      if (w.firing) return "flamethrower firing";
+      return o.weaponReady ? "flamethrower has fuel" : "flamethrower out of fuel";
+    case "ram":
+      if (w.boosting) return "charging at full boost";
+      return o.weaponReady ? "ram plate with boost in reserve" : "ram plate, boost spent";
   }
 }
 
 export function inReachOf(me: Bot, o: Bot): boolean {
+  if (me.kind === "torch") return me.torchCovers(o);
   const { at, r } = me.weaponHitbox();
   return dist(at, o.p) < r + o.radius * 0.85 && !o.airborne;
+}
+
+/** How close a ready, facing opponent has to be before it counts as a threat, by its weapon. */
+function threatRange(o: Bot, me: Bot): number {
+  const base = o.kind === "torch" ? o.def.tuning.torch.range + 0.4 : o.kind === "ram" ? 3.4 : 2.6;
+  return base + me.def.stats.awareness;
 }
 
 function opponentFacts(me: Bot, o: Bot): OpponentFacts {
@@ -122,8 +153,9 @@ function opponentFacts(me: Bot, o: Bot): OpponentFacts {
     airborne: o.airborne,
     stunned: o.stun > 0,
     heldBy: o.heldBy?.id ?? null,
+    burning: o.burn > 0,
     inReach: inReachOf(me, o),
-    threatening: o.weaponReady && facingMe > 0.7 && gap < 2.6 && o.controllable,
+    threatening: o.weaponReady && facingMe > 0.7 && gap < threatRange(o, me) && o.controllable,
   };
 }
 
@@ -152,6 +184,7 @@ export function sense(me: Bot, bots: Bot[], time: number, timeLeft: number): Bot
     heldBy: me.heldBy?.id ?? null,
     airborne: me.airborne,
     stunned: me.stun > 0,
+    burning: me.burn > 0,
     pitOpen: pitPhase(time) === "open",
     pitDist: Math.max(0, dist(me.p, ARENA.pit.center) - ARENA.pit.half),
     sawsUp: sawPhase(time) === "up",

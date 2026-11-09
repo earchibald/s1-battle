@@ -27,9 +27,18 @@ export function commentate(e: SimEvent, world: World): { text: string; cls: stri
           return e.power > 0 ? { text: `The floor saws are chewing on ${e.victim}!`, cls: "hazard" } : null;
         case "crush":
           return null;
+        case "spinner":
+          return { text: pick([`${e.attacker}'s bar catches ${e.victim} and sends it flying! ${n}.`, `WHANG! ${e.victim} finds out what the bar is for. ${n} damage.`]), cls: "hit" };
+        case "torch":
+          if (e.power < 0.3) return null;
+          return { text: pick([`${e.attacker} lights up ${e.victim}! ${n} and it's still burning.`, `${e.victim} is on fire courtesy of ${e.attacker}. ${n} damage.`]), cls: "hit" };
+        case "ram":
+          return { text: pick([`${e.attacker} slams into ${e.victim} for ${n}!`, `${e.victim} gets bulldozed by ${e.attacker}. ${n} damage.`]), cls: "hit" };
       }
       return null;
     }
+    case "boost":
+      return Math.random() < 0.35 ? { text: `${e.bot} hits the boost!`, cls: "" } : null;
     case "strike":
       return e.landed ? null : { text: pick([`${e.bot} swings and hits nothing but floor.`, `${e.bot} whiffs the hammer — it's exposed!`]), cls: "" };
     case "grab":

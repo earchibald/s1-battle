@@ -1,7 +1,8 @@
 import { ARENA, insidePit, nearestSawSlot, pitPhase, sawPhase } from "./arena";
 import type { Bot } from "./bot";
 import { inReachOf } from "./perception";
-import { add, angleOf, clamp, dist, fromAngle, len, norm, perp, scale, sub, wrap, type Vec } from "./math";
+import { FIRE_TECHNIQUES } from "@shared/build";
+import { add, angleOf, clamp, dist, dot, fromAngle, len, norm, perp, scale, sub, wrap, type Vec } from "./math";
 
 /**
  * Turns an Intent (what the brain wants) into throttle/steer/trigger (what the motors do), every tick.
@@ -74,6 +75,12 @@ function face(me: Bot, point: Vec): Drive {
   const rel = wrap(angleOf(sub(point, me.p)) - me.heading);
   return { throttle: Math.abs(rel) < 0.2 ? 0 : 0.05, steer: clamp(rel * 3, -1, 1) };
 }
+/** Keep the nozzle on the target and keep closing slowly so the flame stays on it. */
+function faceAndCreep(me: Bot, point: Vec): Drive {
+  const rel = wrap(angleOf(sub(point, me.p)) - me.heading);
+  const d = dist(me.p, point);
+  return { throttle: d > 2.2 ? 0.45 : 0.1, steer: clamp(rel * 3, -1, 1) };
+}
 
 function orbitPoint(me: Bot, target: Bot, radius: number, dir: number): Vec {
   const toMe = norm(sub(me.p, target.p));
@@ -94,6 +101,28 @@ function flankPoint(me: Bot, target: Bot): Vec {
   const inFront = Math.cos(wrap(angleOf(sub(me.p, target.p)) - target.heading)) > 0.2;
   if (inFront) return add(target.p, scale(side, sideSign * (target.radius + me.radius + 2.6)));
   return behind;
+}
+
+/**
+ * Herding: to push `target` toward `goal`, get on the far side of it first (the point behind the target
+ * as seen from the goal), then drive through it toward the goal. Returns the nav point and whether we
+ * are already lined up to push.
+ */
+function shovePlan(me: Bot, target: Bot, goal: Vec): { nav: Vec; pushing: boolean } {
+  const away = norm(sub(target.p, goal)); // from goal, through target, toward where we want to be
+  const toMe = norm(sub(me.p, target.p));
+  const lined = dot(toMe, away) > 0.75;
+  if (lined) {
+    // Aim at a point just past the target on the goal line so we keep leaning on it.
+    return { nav: add(target.p, scale(away, -(target.radius + 1.2))), pushing: true };
+  }
+  // Swing to the far side, around the target rather than through it.
+  const standoff = target.radius + me.radius + 1.0;
+  const side = perp(away);
+  const sideSign = Math.sign(dot(side, toMe)) || 1;
+  const mid = add(target.p, scale(add(away, scale(side, sideSign * 0.9)), standoff * 1.15));
+  const far = add(target.p, scale(away, standoff));
+  return { nav: dot(toMe, away) > 0.1 ? far : mid, pushing: false };
 }
 
 function retreatPoint(me: Bot, from: Vec | null, time: number): Vec {
@@ -121,7 +150,7 @@ export function control(me: Bot, bots: Bot[], time: number) {
 
   let drive: Drive = { throttle: 0, steer: 0 };
   let nav: Vec | null = null;
-  const aggressive = intent.maneuver === "engage" || intent.maneuver === "flank";
+  const aggressive = intent.maneuver === "engage" || intent.maneuver === "flank" || FIRE_TECHNIQUES.includes(intent.maneuver);
   // A nervous bot drives harder and weaves a little; it reads as evasive on screen.
   const nerves = intent.danger > 0.65 ? 1 : 0;
   const weave = nerves ? Math.sin(time * 9) * 0.35 : 0;
@@ -170,10 +199,19 @@ export function control(me: Bot, bots: Bot[], time: number) {
     }
     case "strike_now":
     case "grab_now":
-    case "flip_now": {
+    case "flip_now":
+    case "burn":
+    case "ram_now": {
       if (target) {
-        if (inReachOf(me, target)) {
-          drive = face(me, target.p);
+        if (me.kind === "ram") {
+          // A charge: boost the whole way in while roughly lined up, lean on them once we arrive.
+          const lead = add(target.p, scale(add(target.vel, target.knock), 0.15));
+          nav = avoidHazards(me, lead, time);
+          drive = driveTo(me, nav, 1);
+          const rel = Math.abs(wrap(angleOf(sub(target.p, me.p)) - me.heading));
+          me.trigger = rel < 0.5 && dist(me.p, target.p) < 7;
+        } else if (inReachOf(me, target)) {
+          drive = me.kind === "torch" ? faceAndCreep(me, target.p) : face(me, target.p);
           me.trigger = true;
         } else {
           nav = avoidHazards(me, target.p, time);
@@ -181,6 +219,25 @@ export function control(me: Bot, bots: Bot[], time: number) {
           // Fire the moment they come into reach.
           me.trigger = alive.some((o) => inReachOf(me, o));
         }
+      }
+      break;
+    }
+    case "shove_to_pit":
+    case "shove_to_saws": {
+      if (!target) break;
+      const goal = intent.maneuver === "shove_to_pit" ? ARENA.pit.center : nearestSawSlot(target.p).center;
+      const plan = shovePlan(me, target, goal);
+      if (plan.pushing) {
+        // We're behind the target relative to the hazard: drive through it. The hazard is for them, not us,
+        // so stop short of following them in.
+        const stop = intent.maneuver === "shove_to_pit" ? insidePit(me.p, -me.radius * 0.5) : false;
+        nav = plan.nav;
+        drive = stop ? { throttle: -1, steer: 0 } : driveTo(me, plan.nav, 1);
+        const gap = dist(me.p, target.p) - me.radius - target.radius;
+        me.trigger = gap < 1.6 && !stop;
+      } else {
+        nav = avoidHazards(me, plan.nav, time, intent.maneuver === "shove_to_pit");
+        drive = driveTo(me, nav, 1);
       }
       break;
     }
@@ -224,9 +281,14 @@ export function control(me: Bot, bots: Bot[], time: number) {
   }
 
   // Reflex: during an aggressive maneuver, fire the one-shot weapon when something is in reach.
-  // The hammer also fires from a hold, since that is the whole point of holding.
-  if (!me.trigger && me.weaponReady && (aggressive || (me.kind === "hammer" && intent.maneuver === "hold"))) {
-    if (me.kind !== "saw" && alive.some((o) => inReachOf(me, o) && !o.heldBy)) me.trigger = true;
+  // The hammer also fires from a hold, since that is the whole point of holding. Continuous weapons
+  // (saw, spinner) need no trigger; the torch's reflex is to flame whatever drives into the cone.
+  const continuous = me.kind === "saw" || me.kind === "spinner";
+  if (!me.trigger && !continuous && me.weaponReady && (aggressive || (me.kind === "hammer" && intent.maneuver === "hold") || (me.kind === "torch" && intent.maneuver === "hold"))) {
+    if (me.kind === "ram") {
+      // The ram's reflex is to boost when a target is lined up a few meters ahead, so it arrives at speed.
+      if (target && Math.abs(wrap(angleOf(sub(target.p, me.p)) - me.heading)) < 0.45 && dist(me.p, target.p) < 5.5 && !target.heldBy) me.trigger = true;
+    } else if (alive.some((o) => inReachOf(me, o) && !o.heldBy)) me.trigger = true;
   }
 
   // Dragging slows us down; holding with a dead-weight victim is heavy work.

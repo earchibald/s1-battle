@@ -13,7 +13,7 @@ export const SAW_BUILD: BotBuild = {
   kind: "saw",
   color: 0xe6a92b,
   accent: 0x1a1a1a,
-  levels: { armor: 0, motor: 5, frame: 3, steering: 4, power: 3, cycle: 3 },
+  levels: { armor: 0, motor: 5, frame: 3, steering: 4, power: 3, cycle: 3, wedge: 1, traction: 2, gyro: 2, sensors: 2 },
   techniques: ["engage", "flank", "circle", "retreat", "spin_up"],
   logic: {
     targeting: { prefer: "nearest", finishBelow: 0.35, finishWithin: 4 },

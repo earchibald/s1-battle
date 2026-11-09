@@ -3,9 +3,9 @@
  * Everything here is plain data: no DOM, no Node APIs.
  */
 
-export type BotKind = "saw" | "hammer" | "grabber" | "flipper";
+export type BotKind = "saw" | "hammer" | "grabber" | "flipper" | "spinner" | "torch" | "ram";
 
-export const BOT_KINDS: BotKind[] = ["saw", "hammer", "grabber", "flipper"];
+export const BOT_KINDS: BotKind[] = ["saw", "hammer", "grabber", "flipper", "spinner", "torch", "ram"];
 
 /** Semantic buckets. Jev reads words far better than raw numbers, so the sim converts everything to these. */
 export type HealthBucket = "healthy" | "scratched" | "damaged" | "critical";
@@ -73,7 +73,7 @@ export type Maneuver =
   | "circle"
   | "retreat"
   | "hold"
-  // saw
+  // saw, spinner
   | "spin_up"
   // hammer
   | "strike_now"
@@ -84,7 +84,13 @@ export type Maneuver =
   | "crush"
   | "release"
   // flipper
-  | "flip_now";
+  | "flip_now"
+  // torch
+  | "burn"
+  // ram
+  | "ram_now"
+  | "shove_to_pit"
+  | "shove_to_saws";
 
 export interface JevAnswerChoice {
   type: "choice";

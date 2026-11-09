@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { STOCK_ORDER, stockBuild } from "@shared/bots/index";
+import { DEFAULT_ROSTER, stockBuild } from "@shared/bots/index";
 import type { BotBuild } from "@shared/build";
 import { cloneBuild, normalizeBuild } from "@shared/build";
 import { defFromBuild } from "@shared/logic";
@@ -17,6 +17,7 @@ import { Designer, uniqueNamed } from "./ui/designer";
 import { SoundEngine } from "./audio/sound";
 import { pitPhase, sawRaise } from "./sim/arena";
 import type { HammerPhase } from "./sim/bot";
+import type { BotKind } from "@shared/types";
 
 /**
  * S1 Arena entry point. Fixed-step simulation, async brains, Three.js rendering, HTML HUD, and the Garage
@@ -44,7 +45,7 @@ const lastBite = new Map<string, number>();
 const lastHammerPhase = new Map<string, HammerPhase>();
 const lastReady = new Map<string, boolean>();
 /** Motor pitch per kind so the four hums don't stack into one drone. */
-const MOTOR_PITCH = { saw: 62, hammer: 44, grabber: 52, flipper: 70 } as const;
+const MOTOR_PITCH: Record<BotKind, number> = { saw: 62, hammer: 44, grabber: 52, flipper: 70, spinner: 58, torch: 66, ram: 40 };
 let lastCountdownTick = -1;
 
 let paused = false;
@@ -68,7 +69,7 @@ let slotBots: string[] = [];
 
 const GARAGE_KEY = "s1.garage.v1";
 function loadRoster(): BotBuild[] {
-  const stock = STOCK_ORDER.map((k, i) => ({ ...stockBuild(k), id: `slot-${i}` }));
+  const stock = DEFAULT_ROSTER.map((k, i) => ({ ...stockBuild(k), id: `slot-${i}` }));
   try {
     const raw = localStorage.getItem(GARAGE_KEY);
     if (!raw) return stock;
@@ -259,6 +260,26 @@ function handleEvent(e: SimEvent) {
         effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), crit ? 0.5 : 0.15, 0x2dd4bf);
         sound.crush();
         shout = crit && Math.random() < 0.3;
+      } else if (e.weapon === "spinner") {
+        effects.sparkBurst(at, dir, 0.6 + e.power * 0.6, 0xd9b3ff);
+        effects.ring(at, 0xb57bff, 0.9);
+        scene.kick(0.5);
+        sound.spinnerHit(e.power, crit);
+        lastBite.set(e.attacker, now);
+        shout = e.amount >= 12 || crit;
+      } else if (e.weapon === "torch") {
+        // power 0.2 is a lingering burn tick; a direct flame hit is 0.6.
+        if (e.power > 0.3) {
+          effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 0.5, 0xff7a1a);
+          sound.torchHit();
+        } else effects.smokePuff(at, false);
+        shout = crit || (e.power > 0.3 && Math.random() < 0.12);
+      } else if (e.weapon === "ram") {
+        effects.sparkBurst(at, dir, Math.min(1, e.amount / 14), 0xc8ffc0);
+        effects.ring(at, 0x7cff6e, 1.1);
+        scene.kick(0.6);
+        sound.slam(e.power * 9, crit);
+        shout = e.amount >= 10 || crit;
       }
       if (crit) {
         // Crits get the full treatment: extra sparks, a chime, a camera kick, a beat of slow motion.
@@ -269,7 +290,7 @@ function handleEvent(e: SimEvent) {
         sound.crit();
       } else if (e.amount >= 20) sound.crowdReact(0.3);
       if (shout) callouts.show(e.at, e.weapon, { size: crit ? 1.6 : e.amount >= 30 ? 1.4 : 1, crit, now });
-      if (e.amount >= 2.5) labels.damage(e.at, e.amount, crit ? "big" : e.amount > 20 ? "big" : e.weapon === "saw" ? "saw" : e.weapon === "saws" ? "hazard" : "");
+      if (e.amount >= 2.5) labels.damage(e.at, e.amount, crit ? "big" : e.amount > 20 ? "big" : e.weapon === "saw" ? "saw" : e.weapon === "saws" ? "hazard" : e.weapon === "torch" ? "fire" : "");
       break;
     }
     case "strike":
@@ -293,6 +314,12 @@ function handleEvent(e: SimEvent) {
       break;
     case "wall":
       sound.wall(e.speed);
+      break;
+    case "boost":
+      sound.boost();
+      break;
+    case "slam":
+      if (e.speed < 2.4) sound.wall(e.speed);
       break;
     case "pit_open":
       sound.pitOpen();
@@ -343,16 +370,18 @@ function updateAudio() {
   const fighting = world.phase === "fighting";
   for (const b of world.bots) {
     const drive = paused || !fighting ? 0 : Math.min(1, Math.hypot(b.vel.x, b.vel.y) / b.def.stats.maxSpeed) * 0.7 + Math.abs(b.throttle) * 0.3;
-    sound.updateMotor(b.id, b.controllable ? drive : 0, b.alive, MOTOR_PITCH[b.kind]);
-    if (b.kind !== "saw" && fighting) {
+    const boostPitch = b.kind === "ram" && b.weapon.boosting ? 1.6 : 1;
+    sound.updateMotor(b.id, b.controllable ? Math.min(1, drive * boostPitch) : 0, b.alive, MOTOR_PITCH[b.kind] * boostPitch);
+    if ((b.kind === "hammer" || b.kind === "grabber" || b.kind === "flipper" || b.kind === "ram") && fighting) {
       const prev = lastReady.get(b.id);
       if (prev === false && b.weaponReady && b.alive) sound.recharged(b.kind);
       lastReady.set(b.id, b.weaponReady);
     }
-    if (b.kind === "saw") {
+    if (b.kind === "saw" || b.kind === "spinner") {
       const biting = world.time - (lastBite.get(b.id) ?? -10) < 0.2;
-      sound.updateSaw(b.id, paused ? 0 : b.weapon.spin, b.alive && world.phase !== "ended", biting);
+      sound.updateSaw(b.id, paused ? 0 : b.weapon.spin, b.alive && world.phase !== "ended", biting, b.kind === "spinner" ? 0.55 : 1);
     }
+    if (b.kind === "torch") sound.updateTorch(b.id, b.weapon.firing && fighting && !paused, b.alive);
     if (b.kind === "hammer") {
       const prev = lastHammerPhase.get(b.id);
       if (prev !== b.weapon.hammerPhase) {

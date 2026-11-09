@@ -7,30 +7,33 @@ import { SAW_BUILD } from "./saw";
 import { HAMMER_BUILD } from "./hammer";
 import { GRABBER_BUILD } from "./grabber";
 import { FLIPPER_BUILD } from "./flipper";
+import { SPINNER_BUILD } from "./spinner";
+import { TORCH_BUILD } from "./torch";
+import { RAM_BUILD } from "./ram";
 
 export * from "./common";
-export { SAW_BUILD, HAMMER_BUILD, GRABBER_BUILD, FLIPPER_BUILD };
+export { SAW_BUILD, HAMMER_BUILD, GRABBER_BUILD, FLIPPER_BUILD, SPINNER_BUILD, TORCH_BUILD, RAM_BUILD };
 
-/** The four stock bots, as builds. Everything else derives from these. */
+/** The stock bots, one per weapon system, as builds. Everything else derives from these. */
 export const STOCK_BUILDS: Record<BotKind, BotBuild> = {
   saw: SAW_BUILD,
   hammer: HAMMER_BUILD,
   grabber: GRABBER_BUILD,
   flipper: FLIPPER_BUILD,
+  spinner: SPINNER_BUILD,
+  torch: TORCH_BUILD,
+  ram: RAM_BUILD,
 };
-export const STOCK_ORDER: BotKind[] = ["saw", "hammer", "grabber", "flipper"];
+/** The default roster is the first four. */
+export const STOCK_ORDER: BotKind[] = ["saw", "hammer", "grabber", "flipper", "spinner", "torch", "ram"];
+export const DEFAULT_ROSTER: BotKind[] = ["saw", "hammer", "grabber", "flipper"];
 
 export function stockBuild(kind: BotKind): BotBuild {
   return cloneBuild(STOCK_BUILDS[kind]);
 }
 
 /** Stock defs, for the headless runner and for anything that just wants "a saw bot". */
-export const BOT_DEFS: Record<BotKind, BotDef> = {
-  saw: defFromBuild(SAW_BUILD),
-  hammer: defFromBuild(HAMMER_BUILD),
-  grabber: defFromBuild(GRABBER_BUILD),
-  flipper: defFromBuild(FLIPPER_BUILD),
-};
+export const BOT_DEFS: Record<BotKind, BotDef> = Object.fromEntries(STOCK_ORDER.map((k) => [k, defFromBuild(STOCK_BUILDS[k])])) as Record<BotKind, BotDef>;
 
 export function botDef(kind: BotKind): BotDef {
   return BOT_DEFS[kind];

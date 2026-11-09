@@ -4,7 +4,7 @@ import { Bot } from "./bot";
 import { control } from "./controller";
 import type { SimEvent } from "./events";
 import { angleOf, clamp, dot, fromAngle, len, makeRng, norm, scale, sub, type Rng, type Vec } from "./math";
-import { applyDamage, destroy, releaseHold, updateWeapon, type WeaponContext } from "./weapons";
+import { applyDamage, destroy, ramSlam, releaseHold, updateBurn, updateWeapon, type WeaponContext } from "./weapons";
 
 export type MatchPhase = "countdown" | "fighting" | "ended";
 
@@ -91,6 +91,7 @@ export class World {
     }
     this.physics(dt, true);
     for (const b of this.bots) updateWeapon(b, ctx, dt);
+    for (const b of this.bots) updateBurn(b, ctx, dt);
     this.hazards(ctx, dt);
     this.checkEnd();
   }
@@ -118,12 +119,17 @@ export class World {
         const fwd = dot(b.vel, f);
         const lat = b.vel.x * -f.y + b.vel.y * f.x;
         // Accelerate along heading toward throttle target, kill lateral slip, clamp speed.
-        const targetSpeed = b.throttle * st.maxSpeed;
-        let nf = fwd + clamp(targetSpeed - fwd, -st.accel * dt, st.accel * dt);
+        // A boosting ram goes faster and harder; a spinner's bar fights the turn (gyroscopic drag).
+        const boost = b.kind === "ram" && b.weapon.boosting ? b.def.tuning.ram : null;
+        const maxSpeed = st.maxSpeed * (boost ? boost.boostMul : 1);
+        const accel = st.accel * (boost ? boost.accelMul : 1);
+        const gyro = b.kind === "spinner" ? 1 - b.def.tuning.spinner.gyroDrag * b.weapon.spin : 1;
+        const targetSpeed = b.throttle * maxSpeed;
+        let nf = fwd + clamp(targetSpeed - fwd, -accel * dt, accel * dt);
         if (Math.abs(b.throttle) < 0.05) nf *= Math.exp(-ROLL_FRICTION * dt);
-        const nl = lat * Math.exp(-LATERAL_GRIP * dt);
+        const nl = lat * Math.exp(-(LATERAL_GRIP + b.def.build.levels.traction * 1.5) * dt);
         b.vel = { x: f.x * nf - f.y * nl, y: f.y * nf + f.x * nl };
-        b.heading += b.steer * st.turnRate * dt * (0.55 + 0.45 * Math.min(1, Math.abs(nf) / st.maxSpeed + 0.5));
+        b.heading += b.steer * st.turnRate * gyro * dt * (0.55 + 0.45 * Math.min(1, Math.abs(nf) / st.maxSpeed + 0.5));
       } else {
         b.vel = scale(b.vel, Math.exp(-ROLL_FRICTION * 1.5 * dt));
       }
@@ -149,7 +155,7 @@ export class World {
             // Coming down from a big throw is a critical landing.
             const crit = impact > 10;
             applyDamage(this.ctx(), b, by, 3 + impact * 0.9, "landing", b.p, Math.min(1, impact / 10), crit);
-            b.stun = Math.max(b.stun, crit ? 0.8 : 0.5);
+            b.stunFor(crit ? 0.8 : 0.5);
           }
           b.launchedBy = null;
         }
@@ -223,11 +229,16 @@ export class World {
           const jimp = (-(1 + e) * relN) / (1 / ma + 1 / mb);
           a.knock = sub(a.knock, scale(n, jimp / ma));
           b.knock = { x: b.knock.x + (n.x * jimp) / mb, y: b.knock.y + (n.y * jimp) / mb };
-          // Hard shoves hurt a little; the wedge-shaped bots take less.
-          if (live && -relN > 5.5) {
+          if (!live) continue;
+          // A ram plate meeting something front-on is a slam, not a bump.
+          const ctx = this.ctx();
+          const slamA = a.kind === "ram" && a.alive && b.alive && ramSlam(ctx, a, b, n, -relN);
+          const slamB = b.kind === "ram" && b.alive && a.alive && ramSlam(ctx, b, a, { x: -n.x, y: -n.y }, -relN);
+          // Hard shoves hurt a little; a ram plate shrugs most of it off.
+          if (-relN > 5.5) {
             const dmg = (-relN - 5.5) * 0.8;
-            if (a.alive) applyDamage(this.ctx(), a, b.alive ? b : null, dmg, "wall", a.p, 0.3);
-            if (b.alive) applyDamage(this.ctx(), b, a.alive ? a : null, dmg, "wall", b.p, 0.3);
+            if (a.alive && !slamB) applyDamage(ctx, a, b.alive ? b : null, dmg * (slamA ? 0.3 : 1), "wall", a.p, 0.3);
+            if (b.alive && !slamA) applyDamage(ctx, b, a.alive ? a : null, dmg * (slamB ? 0.3 : 1), "wall", b.p, 0.3);
           }
         }
       }
