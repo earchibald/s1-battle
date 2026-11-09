@@ -1,7 +1,9 @@
 import type { BotDef } from "@shared/bots/common";
+import type { Footprint } from "@shared/build";
 import type { BotKind, Intent } from "@shared/types";
 import type { Vec } from "./math";
 import { fromAngle } from "./math";
+import { makeObb, type Obb } from "./obb";
 
 export type HammerPhase = "idle" | "windup" | "strike" | "recover";
 
@@ -127,8 +129,16 @@ export class Bot {
     };
   }
 
+  /** Rough size for ranges, perception and hazards. Collisions use `obb()` instead. */
   get radius(): number {
     return this.def.stats.radius;
+  }
+  get footprint(): Footprint {
+    return this.def.stats.footprint;
+  }
+  /** The chassis as an oriented box at the current pose. */
+  obb(): Obb {
+    return makeObb(this.p, this.heading, this.footprint);
   }
   get mass(): number {
     return this.def.stats.mass;

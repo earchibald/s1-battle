@@ -367,7 +367,13 @@ function updateRam(bot: Bot, ctx: WeaponContext, dt: number) {
  */
 export function ramSlam(ctx: WeaponContext, ram: Bot, victim: Bot, n: { x: number; y: number }, closing: number): boolean {
   const f = ram.forward;
+  // The plate has to be on the victim, not a corner clipping it: the contact normal follows the plate face,
+  // so judge alignment by where the victim sits relative to the ram's nose instead.
   if (f.x * n.x + f.y * n.y < 0.55) return false;
+  const dx = victim.p.x - ram.p.x;
+  const dy = victim.p.y - ram.p.y;
+  const d = Math.hypot(dx, dy) || 1;
+  if ((f.x * dx + f.y * dy) / d < 0.6) return false;
   const T = ram.def.tuning.ram;
   if (closing > 0.4) {
     victim.lastHitBy = ram.id;

@@ -4,6 +4,7 @@ import { Bot } from "./bot";
 import { control } from "./controller";
 import type { SimEvent } from "./events";
 import { angleOf, clamp, dot, fromAngle, len, makeRng, norm, scale, sub, type Rng, type Vec } from "./math";
+import { aabbExtents, obbContact } from "./obb";
 import { applyDamage, destroy, ramSlam, releaseHold, updateBurn, updateWeapon, type WeaponContext } from "./weapons";
 
 export type MatchPhase = "countdown" | "fighting" | "ended";
@@ -107,7 +108,8 @@ export class World {
         // Pinned in the holder's jaws.
         const h = b.heldBy;
         const f = h.forward;
-        const off = h.radius + b.radius - 0.35;
+        // Victim's tail sits at the holder's nose, between the jaws.
+        const off = h.footprint.front + b.footprint.back - 0.05;
         b.p = { x: h.p.x + f.x * off, y: h.p.y + f.y * off };
         b.vel = { x: 0, y: 0 };
         b.knock = { x: 0, y: 0 };
@@ -170,21 +172,25 @@ export class World {
   }
 
   private walls(b: Bot, live: boolean) {
-    const lim = ARENA.half - b.radius;
+    // Keep the whole chassis box inside the arena: clamp its centre, then move the axle by the same amount.
+    const box = b.obb();
+    const ext = aabbExtents(box);
     let hit: Vec | null = null;
     let speed = 0;
     const total = { x: b.vel.x + b.knock.x, y: b.vel.y + b.knock.y };
-    if (b.p.x < -lim || b.p.x > lim) {
-      hit = { x: Math.sign(b.p.x) * ARENA.half, y: b.p.y };
+    const limX = ARENA.half - ext.x;
+    if (box.c.x < -limX || box.c.x > limX) {
+      hit = { x: Math.sign(box.c.x) * ARENA.half, y: b.p.y };
       speed = Math.abs(total.x);
-      b.p.x = clamp(b.p.x, -lim, lim);
+      b.p.x += clamp(box.c.x, -limX, limX) - box.c.x;
       b.vel.x *= -0.2;
       b.knock.x *= -0.35;
     }
-    if (b.p.y < -lim || b.p.y > lim) {
-      hit = { x: b.p.x, y: Math.sign(b.p.y) * ARENA.half };
+    const limY = ARENA.half - ext.y;
+    if (box.c.y < -limY || box.c.y > limY) {
+      hit = { x: b.p.x, y: Math.sign(box.c.y) * ARENA.half };
       speed = Math.max(speed, Math.abs(total.y));
-      b.p.y = clamp(b.p.y, -lim, lim);
+      b.p.y += clamp(box.c.y, -limY, limY) - box.c.y;
       b.vel.y *= -0.2;
       b.knock.y *= -0.35;
     }
@@ -209,12 +215,11 @@ export class World {
         const b = bs[j];
         if (a.airborne !== b.airborne) continue; // one flies over the other
         if (a.heldBy === b || b.heldBy === a) continue;
-        const d = sub(b.p, a.p);
-        const dist = len(d);
-        const minD = a.radius + b.radius;
-        if (dist >= minD || dist < 1e-6) continue;
-        const n = scale(d, 1 / dist);
-        const overlap = minD - dist;
+        // Chassis are oriented boxes, so bodies meet at their drawn edges instead of at a circle.
+        const contact = obbContact(a.obb(), b.obb());
+        if (!contact) continue;
+        const n = contact.n;
+        const overlap = contact.depth;
         const ma = a.alive ? a.mass : a.mass * 3;
         const mb = b.alive ? b.mass : b.mass * 3;
         const wa = mb / (ma + mb);
