@@ -290,6 +290,7 @@ export function defFromBuild(build: BotBuild): BotDef {
       turnRate: d.turnRate,
       armor: d.armor,
       radius: d.radius,
+      footprint: d.footprint,
       knockResist: d.knockResist,
       stunResist: d.stunResist,
       impactResist: d.impactResist,

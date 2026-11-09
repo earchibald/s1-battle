@@ -44,6 +44,17 @@ export interface WeaponSystem {
   blurb: string;
   mass: number;
   radius: number;
+  /**
+   * Chassis footprint in model units (before the frame scale), measured from the axle centre: how far the
+   * body reaches forward, backward, and to each side. Must match what `botMesh.ts` draws, since this is what
+   * bots and walls collide against; `radius` stays as the rough size used for ranges and hazards.
+   */
+  footprint: Footprint;
+}
+export interface Footprint {
+  front: number;
+  back: number;
+  half: number;
 }
 export const WEAPONS: Record<BotKind, WeaponSystem> = {
   saw: {
@@ -53,6 +64,7 @@ export const WEAPONS: Record<BotKind, WeaponSystem> = {
     blurb: "Continuous contact damage. Needs spin-up and bleeds speed on every bite. Rear bites are critical.",
     mass: 0.55,
     radius: 0.85,
+    footprint: { front: 0.85, back: 0.65, half: 0.6 },
   },
   hammer: {
     kind: "hammer",
@@ -61,6 +73,7 @@ export const WEAPONS: Record<BotKind, WeaponSystem> = {
     blurb: "Windup, strike, long recharge. Huge hit plus a stun. Critical on anything that cannot move.",
     mass: 0.85,
     radius: 1.0,
+    footprint: { front: 0.93, back: 0.8, half: 0.8 },
   },
   grabber: {
     kind: "grabber",
@@ -69,6 +82,7 @@ export const WEAPONS: Record<BotKind, WeaponSystem> = {
     blurb: "Grab, crush, and drag victims into the pit or onto the kill saws. Rear grabs crush critically.",
     mass: 0.75,
     radius: 0.95,
+    footprint: { front: 0.6, back: 0.73, half: 0.66 },
   },
   flipper: {
     kind: "flipper",
@@ -77,6 +91,7 @@ export const WEAPONS: Record<BotKind, WeaponSystem> = {
     blurb: "Throws opponents into the air. Landings and walls do the damage. Flips toward a wall are critical.",
     mass: 0.65,
     radius: 0.9,
+    footprint: { front: 0.95, back: 0.8, half: 0.68 },
   },
   spinner: {
     kind: "spinner",
@@ -85,6 +100,7 @@ export const WEAPONS: Record<BotKind, WeaponSystem> = {
     blurb: "A long steel bar on a vertical axle. Wide reach, huge knockback, slow spin-up, and every hit stops the bar. Anyone who charges it gets launched: critical on a closing target.",
     mass: 0.7,
     radius: 0.9,
+    footprint: { front: 0.55, back: 0.85, half: 0.66 },
   },
   torch: {
     kind: "torch",
@@ -93,6 +109,7 @@ export const WEAPONS: Record<BotKind, WeaponSystem> = {
     blurb: "A cone of flame a couple of meters long that half-ignores armor and keeps burning after the flame leaves. Limited fuel that refills while not firing. Rear burns find the fuel cells: critical.",
     mass: 0.6,
     radius: 0.9,
+    footprint: { front: 0.55, back: 0.7, half: 0.62 },
   },
   ram: {
     kind: "ram",
@@ -101,6 +118,7 @@ export const WEAPONS: Record<BotKind, WeaponSystem> = {
     blurb: "No weapon but speed and mass. A boost reserve powers short charges; a front-on slam does damage and shoves hard. Shove victims into the pit or onto the saws. Slamming a bot against the wall is critical.",
     mass: 0.75,
     radius: 0.95,
+    footprint: { front: 1.0, back: 0.83, half: 0.8 },
   },
 };
 
@@ -377,6 +395,8 @@ export interface Derived {
   turnRate: number;
   armor: number;
   radius: number;
+  /** Collision footprint in metres, after the frame scale. */
+  footprint: Footprint;
   weightClass: WeightClass;
   /** How much a flip throws this bot, 0..1. */
   flipResist: number;
@@ -401,6 +421,8 @@ export function derive(b: BotBuild): Derived {
   const mass = r2(0.2 + w.mass + L.armor * 0.11 + L.frame * 0.03 + L.power * 0.04 + L.wedge * 0.03 + L.traction * 0.01);
   const P = L.power;
   const C = L.cycle;
+  // Same scale the renderer applies to the body group, so the hitbox is the drawn chassis.
+  const bodyScale = 1.18 * (0.955 + L.frame * 0.015);
   const flipResist = r2(Math.min(0.95, 1 - Math.min(1, 1.15 / mass) * (1 - L.wedge * 0.1)));
   return {
     hp: 200 + L.frame * 50,
@@ -410,6 +432,7 @@ export function derive(b: BotBuild): Derived {
     turnRate: r2((1.6 + L.steering * 0.75) / Math.pow(mass, 0.3)),
     armor: r2(L.armor * 0.09),
     radius: w.radius,
+    footprint: { front: r2(w.footprint.front * bodyScale), back: r2(w.footprint.back * bodyScale), half: r2(w.footprint.half * bodyScale) },
     weightClass: mass < 1.1 ? "lightweight" : mass < 1.5 ? "middleweight" : mass < 1.9 ? "heavyweight" : "superheavy",
     flipResist,
     knockResist: r2(L.traction * 0.08),
@@ -441,7 +464,7 @@ export function derive(b: BotBuild): Derived {
         burnDps: r2(1.8 + P * 0.45),
         burnTime: 1.5,
       },
-      ram: { boostMul: r2(1.5 + P * 0.1), accelMul: 2.0, burst: r2(1.2 + C * 0.1), refill: r2(4.6 - C * 0.45), hitMul: r2(2.6 + P * 0.7), pinDps: r2(6 + P * 2) },
+      ram: { boostMul: r2(1.5 + P * 0.1), accelMul: 2.0, burst: r2(1.2 + C * 0.1), refill: r2(4.6 - C * 0.45), hitMul: r2(1.8 + P * 0.5), pinDps: r2(5 + P * 1.6) },
     },
   };
 }

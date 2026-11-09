@@ -1,5 +1,5 @@
 import type { BotKind, Intent, Maneuver, Perception } from "../types";
-import type { BotBuild, WeaponTuning } from "../build";
+import type { BotBuild, Footprint, WeaponTuning } from "../build";
 
 /** Plain-JSON question shapes accepted by POST /v1/systemone (and by the SDK). */
 export type ChoiceQuestion = { type: "choice"; instructions: string; criteria: Record<string, string | null> };
@@ -61,6 +61,8 @@ export interface BotStats {
   /** Fraction of incoming damage shrugged off. */
   armor: number;
   radius: number;
+  /** Oriented-box collision footprint (metres from the axle centre). */
+  footprint: Footprint;
   knockResist: number;
   stunResist: number;
   impactResist: number;
