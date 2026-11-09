@@ -16,6 +16,7 @@ import { Labels } from "./ui/labels";
 import { Callouts } from "./ui/callouts";
 import { Designer, uniqueNamed } from "./ui/designer";
 import { SoundEngine } from "./audio/sound";
+import { SeasonMode } from "./season/seasonUi";
 import { pitPhase, sawRaise } from "./sim/arena";
 import type { HammerPhase } from "./sim/bot";
 import type { BotKind } from "@shared/types";
@@ -23,7 +24,7 @@ import type { BotKind } from "@shared/types";
 /**
  * S1 Arena entry point. Fixed-step simulation, async brains, Three.js rendering, HTML HUD, and the Garage
  * (designer) overlay. Keyboard: Space pause · N new match · C camera · D debug · M mute · 1/2/3 speed ·
- * J/T/B all Jev/trained/baseline · G garage.
+ * J/T/B all Jev/trained/baseline · G garage · S season.
  */
 
 const FIXED_DT = 1 / 60;
@@ -108,6 +109,7 @@ function toast(text: string) {
 
 const designer = new Designer(document.getElementById("designer")!, roster, {
   deploy: () => {
+    season.suspend(); // a Garage deploy is an exhibition match; the season stays saved
     startMatch();
     toast(`Deployed: ${roster.map((b) => b.name).join(" · ")}`);
   },
@@ -163,7 +165,13 @@ const hud = new Hud(document.getElementById("hud")!, {
     sound.uiClick();
     designer.toggle();
   },
+  toggleSeason() {
+    sound.uiClick();
+    season.toggle();
+  },
 });
+/** Season arc (src/season/): while season.playing, startMatch runs its fixtures and match ends feed its table. */
+const season = new SeasonMode({ roster, startMatch: () => startMatch(), ticker: (text, cls) => hud.ticker(text, cls), toast, click: () => sound.uiClick() });
 const MODE_LABEL: Record<BrainMode, string> = { jev: "Jev", trained: "trained", baseline: "baseline" };
 const MODE_CLS: Record<BrainMode, string> = { jev: "jev", trained: "net", baseline: "base" };
 function setAllBrains(mode: BrainMode) {
@@ -206,15 +214,19 @@ function startMatch() {
   hud.hideResult();
 
   // Each slot gets its own copy of the build so garage edits only reach the arena on deploy (or live-apply).
-  const defs = roster.map((b) => defFromBuild(uniqueNamed(cloneBuild(b), roster)));
+  // In season mode the fixture names the four bots (already in start-corner order) and the seed.
+  const fixture = season.fixture();
+  const defs = fixture ? fixture.defs : roster.map((b) => defFromBuild(uniqueNamed(cloneBuild(b), roster)));
   // Rotate start corners each match so nobody always spawns next to the pit.
-  const order = defs.map((_, i) => (i + lineupRotation) % defs.length);
+  const order = defs.map((_, i) => (i + (fixture ? 0 : lineupRotation)) % defs.length);
   const lineup = order.map((i) => defs[i]);
-  lineupRotation++;
-  world = new World(lineup, Date.now() % 100000);
+  if (!fixture) lineupRotation++;
+  world = new World(lineup, fixture ? fixture.seed : Date.now() % 100000);
   world.matchNumber = matchNumber++;
+  hud.matchLabel = fixture ? fixture.label.toUpperCase() : null;
   slotBots = [];
-  order.forEach((slot, pos) => (slotBots[slot] = world.bots[pos].id));
+  // Garage slots map to arena bots only in exhibition; season bots are the season's frozen builds.
+  if (!fixture) order.forEach((slot, pos) => (slotBots[slot] = world.bots[pos].id));
   for (const bot of world.bots) {
     const mesh = new BotMesh(bot);
     scene.scene.add(mesh.group);
@@ -230,13 +242,15 @@ function startMatch() {
     debugLines.visible = debug;
     scene.scene.add(debugLines);
   }
-  hud.ticker(`Match ${world.matchNumber}: ${lineup.map((d) => d.name).join(" · ")}`, "big");
+  hud.ticker(`${fixture ? fixture.label : `Match ${world.matchNumber}`}: ${lineup.map((d) => d.name).join(" · ")}`, "big");
+  if (fixture?.hook) hud.ticker(fixture.hook, "season");
 }
 
 function handleEvent(e: SimEvent) {
   for (const b of brains.values()) b.nudge(e);
   const line = commentate(e, world);
   if (line) hud.ticker(line.text, line.cls);
+  season.onEvent(e, world);
 
   switch (e.type) {
     case "hit": {
@@ -465,10 +479,18 @@ window.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape" || ev.key === "g" || ev.key === "G") designer.hide();
     return;
   }
+  if (season.open) {
+    if (ev.key === "Escape" || ev.key === "s" || ev.key === "S") season.hide();
+    return;
+  }
   switch (ev.key) {
     case "g":
     case "G":
       designer.show();
+      break;
+    case "s":
+    case "S":
+      season.show();
       break;
     case " ":
       ev.preventDefault();
@@ -557,7 +579,8 @@ function frame(now: number) {
   updateDebug();
   designer.tick(realDt);
   hud.update(world, brains);
-  if (world.phase === "ended" && endedAt !== null) {
+  // Season fixtures do not auto-advance: the season screen takes over after the match (see SeasonMode.onEvent).
+  if (world.phase === "ended" && endedAt !== null && !season.playing) {
     const elapsed = (performance.now() - endedAt) / 1000;
     hud.showResult(world, AUTO_NEXT_SECONDS - elapsed);
     if (elapsed >= AUTO_NEXT_SECONDS) startMatch();
@@ -569,7 +592,7 @@ startMatch();
 syncControls();
 // Debug handle for the console: window.__s1.world, .sound, .brains
 Object.assign(window as unknown as Record<string, unknown>, {
-  __s1: { get world() { return world; }, get brains() { return brains; }, sound, scene, effects, designer, roster },
+  __s1: { get world() { return world; }, get brains() { return brains; }, sound, scene, effects, designer, roster, season },
 });
 void loadTrained();
 void pollJev();
