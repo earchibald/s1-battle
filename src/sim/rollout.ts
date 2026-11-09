@@ -46,7 +46,7 @@ export function rollout(d: Driver, botId: string, intent: Intent, opts: RolloutO
       if (e.type === "hit" && e.attacker === botId && e.victim !== botId) {
         hitDealt += e.amount;
         if (e.crit) crit += e.amount;
-        if (e.weapon === "saws" || e.weapon === "wall") hazard += e.amount;
+        if (e.weapon === "saws" || e.weapon === "wall" || e.weapon === "vent" || e.weapon === "shock") hazard += e.amount;
       } else if ((e.type === "destroyed" || e.type === "pitted") && e.by === botId && e.bot !== botId) kills++;
     }
   }

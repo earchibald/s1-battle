@@ -142,13 +142,13 @@ export const TECHNIQUES: Technique[] = [
   { m: "grab_now", label: "Grab", cost: 2, kinds: ["grabber"], blurb: "Close the jaws this instant." },
   { m: "crush", label: "Crush", cost: 1, kinds: ["grabber"], blurb: "Hold still and squeeze." },
   { m: "drag_to_pit", label: "Drag to pit", cost: 3, kinds: ["grabber"], blurb: "Haul a held victim into the open pit." },
-  { m: "drag_to_saws", label: "Drag to saws", cost: 3, kinds: ["grabber"], blurb: "Haul a held victim onto the kill saws." },
+  { m: "drag_to_saws", label: "Drag to saws", cost: 3, kinds: ["grabber"], blurb: "Haul a held victim onto the kill saws, or onto a trap that is about to fire." },
   { m: "release", label: "Release", cost: 0, kinds: ["grabber"], blurb: "Let go, usually to escape a third bot." },
   { m: "flip_now", label: "Flip", cost: 2, kinds: ["flipper"], blurb: "Fire the flipper this instant." },
   { m: "burn", label: "Burn", cost: 2, kinds: ["torch"], blurb: "Close in and hold the flame on the target while fuel lasts." },
   { m: "ram_now", label: "Ram", cost: 2, kinds: ["ram"], blurb: "Dump the boost reserve into a charge at the target." },
   { m: "shove_to_pit", label: "Shove to pit", cost: 3, kinds: ["ram"], blurb: "Get on the far side of the target and bulldoze it into the open pit." },
-  { m: "shove_to_saws", label: "Shove to saws", cost: 3, kinds: ["ram"], blurb: "Get on the far side of the target and bulldoze it onto the kill saws." },
+  { m: "shove_to_saws", label: "Shove to saws", cost: 3, kinds: ["ram"], blurb: "Get on the far side of the target and bulldoze it onto the kill saws, or onto a trap that is about to fire." },
 ];
 export const TECHNIQUE_BY_M: Record<string, Technique> = Object.fromEntries(TECHNIQUES.map((t) => [t.m, t]));
 export function techniqueAllowed(m: Maneuver, kind: BotKind): boolean {
@@ -191,6 +191,9 @@ export type SubjectKey =
   | "arena.sawsUp"
   | "arena.sawsActive"
   | "arena.sawsDist"
+  | "arena.trapLive"
+  | "arena.trapDist"
+  | "target.trapDist"
   | "arena.timeLeft";
 
 export interface Subject {
@@ -227,6 +230,9 @@ export const SUBJECTS: Subject[] = [
   { key: "arena.sawsUp", label: "kill saws are up", type: "bool", group: "arena" },
   { key: "arena.sawsActive", label: "kill saws are up or rising", type: "bool", group: "arena" },
   { key: "arena.sawsDist", label: "distance to the nearest saw slot", type: "meters", group: "arena" },
+  { key: "arena.trapLive", label: "a trap (vent, pad or shock plate) is charging or firing", type: "bool", group: "arena" },
+  { key: "arena.trapDist", label: "my distance to the nearest live trap", type: "meters", group: "arena" },
+  { key: "target.trapDist", label: "target's distance to the nearest live trap", type: "meters", group: "target" },
   { key: "arena.timeLeft", label: "match time left", type: "seconds", group: "arena" },
 ];
 export const SUBJECT_BY_KEY: Record<string, Subject> = Object.fromEntries(SUBJECTS.map((s) => [s.key, s]));

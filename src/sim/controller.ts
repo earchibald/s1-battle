@@ -1,4 +1,4 @@
-import { ARENA, insidePit, nearestSawSlot, pitPhase, sawPhase } from "./arena";
+import { ARENA, insidePit, liveTraps, nearestLiveTrap, nearestSawSlot, pitPhase, sawPhase, trapGap, type TrapZone } from "./arena";
 import type { Bot } from "./bot";
 import { inReachOf } from "./perception";
 import { FIRE_TECHNIQUES } from "@shared/build";
@@ -52,7 +52,65 @@ function avoidHazards(me: Bot, point: Vec, time: number, ignorePit = false): Vec
       }
     }
   }
+  // Traps that are telegraphing or firing: keep the nav point off them and do not cut across them.
+  for (const z of liveTraps(time)) {
+    const kx = z.halfX + me.radius * 0.5 + 0.35;
+    const ky = z.halfY + me.radius * 0.5 + 0.35;
+    const dx = out.x - z.center.x;
+    const dy = out.y - z.center.y;
+    if (Math.abs(dx) < kx && Math.abs(dy) < ky) {
+      // Slide the point out along the shortest axis, toward the side I am already on when it is a toss-up.
+      if (kx - Math.abs(dx) < ky - Math.abs(dy)) out.x = z.center.x + Math.sign(dx || me.p.x - z.center.x || 1) * kx;
+      else out.y = z.center.y + Math.sign(dy || me.p.y - z.center.y || 1) * ky;
+      continue;
+    }
+    // Path check: if the next couple of meters of the straight line cross the zone, swing around its far side.
+    if (trapGap(me.p, z) < 0.05) continue; // already on it: the escape reflex in `control` handles that
+    const to = sub(out, me.p);
+    const d = len(to);
+    if (d < 0.5) continue;
+    const dir = scale(to, 1 / d);
+    const along = dot(sub(z.center, me.p), dir);
+    if (along < 0 || along > Math.min(d, 4.5)) continue;
+    const side = perp(dir);
+    const off = dot(sub(z.center, me.p), side);
+    const clear = Math.max(kx, ky);
+    if (Math.abs(off) < clear) out = add(z.center, scale(side, -(Math.sign(off) || 1) * (clear + 0.5)));
+  }
   return clampToArena(out, me.radius + 0.2);
+}
+
+/** The live trap I am standing on, if any. */
+function trapUnder(me: Bot, time: number): TrapZone | null {
+  for (const z of liveTraps(time)) {
+    if (Math.abs(me.p.x - z.center.x) < z.halfX + me.radius * 0.3 && Math.abs(me.p.y - z.center.y) < z.halfY + me.radius * 0.3) return z;
+  }
+  return null;
+}
+/** Nearest point just off a trap zone. */
+function trapExit(me: Bot, z: TrapZone): Vec {
+  const kx = z.halfX + me.radius * 0.5 + 0.5;
+  const ky = z.halfY + me.radius * 0.5 + 0.5;
+  const dx = me.p.x - z.center.x;
+  const dy = me.p.y - z.center.y;
+  // Prefer the exit I am already pointed at when it is not much farther.
+  const f = me.forward;
+  const costX = kx - Math.abs(dx) - Math.abs(f.x) * 0.5;
+  const costY = ky - Math.abs(dy) - Math.abs(f.y) * 0.5;
+  const out = costX < costY ? { x: z.center.x + Math.sign(dx || f.x || 1) * kx, y: me.p.y } : { x: me.p.x, y: z.center.y + Math.sign(dy || f.y || 1) * ky };
+  return clampToArena(out, me.radius + 0.2);
+}
+
+/**
+ * Where "the saws" are for a shove or a drag: the nearest kill saw slot, or a trap that is telegraphing or
+ * firing when that is nearer to the victim (or the saws are down and a live trap is within a few meters).
+ */
+function hazardGoal(victim: Bot, time: number): { center: Vec; trap: TrapZone | null } {
+  const slot = nearestSawSlot(victim.p);
+  const trap = nearestLiveTrap(victim.p, time);
+  const sawsLive = sawPhase(time) !== "down";
+  if (trap && trap.d < (sawsLive ? Math.min(4, slot.d - 1) : 4)) return { center: trap.zone.center, trap: trap.zone };
+  return { center: slot.center, trap: null };
 }
 
 function driveTo(me: Bot, point: Vec, speed = 1): Drive {
@@ -150,6 +208,8 @@ export function control(me: Bot, bots: Bot[], time: number) {
 
   let drive: Drive = { throttle: 0, steer: 0 };
   let nav: Vec | null = null;
+  /** This maneuver is deliberately working a live trap (shoving or dragging a victim onto it). */
+  let usingTrap = false;
   const aggressive = intent.maneuver === "engage" || intent.maneuver === "flank" || FIRE_TECHNIQUES.includes(intent.maneuver);
   // A nervous bot drives harder and weaves a little; it reads as evasive on screen.
   const nerves = intent.danger > 0.65 ? 1 : 0;
@@ -225,12 +285,14 @@ export function control(me: Bot, bots: Bot[], time: number) {
     case "shove_to_pit":
     case "shove_to_saws": {
       if (!target) break;
-      const goal = intent.maneuver === "shove_to_pit" ? ARENA.pit.center : nearestSawSlot(target.p).center;
+      const hz = intent.maneuver === "shove_to_pit" ? null : hazardGoal(target, time);
+      const goal = hz ? hz.center : ARENA.pit.center;
       const plan = shovePlan(me, target, goal);
+      usingTrap = !!hz?.trap && plan.pushing;
       if (plan.pushing) {
         // We're behind the target relative to the hazard: drive through it. The hazard is for them, not us,
         // so stop short of following them in.
-        const stop = intent.maneuver === "shove_to_pit" ? insidePit(me.p, -me.radius * 0.5) : false;
+        const stop = intent.maneuver === "shove_to_pit" ? insidePit(me.p, -me.radius * 0.5) : !!hz?.trap && trapGap(me.p, hz.trap) < me.radius * 0.3;
         nav = plan.nav;
         drive = stop ? { throttle: -1, steer: 0 } : driveTo(me, plan.nav, 1);
         const gap = dist(me.p, target.p) - me.radius - target.radius;
@@ -257,8 +319,13 @@ export function control(me: Bot, bots: Bot[], time: number) {
     case "drag_to_saws": {
       if (!me.holding) break;
       const held = me.holding;
-      const slot = nearestSawSlot(held.p).center;
-      const over = Math.abs(held.p.x - slot.x) < 0.8 && Math.abs(held.p.y - slot.y) < 3.0;
+      const hz = hazardGoal(held, time);
+      const slot = hz.center;
+      usingTrap = !!hz.trap;
+      // Over a trap: the victim's center is on the tile. Over the saws: on the slot.
+      const over = hz.trap
+        ? Math.abs(held.p.x - slot.x) < hz.trap.halfX - 0.1 && Math.abs(held.p.y - slot.y) < hz.trap.halfY - 0.1
+        : Math.abs(held.p.x - slot.x) < 0.8 && Math.abs(held.p.y - slot.y) < 3.0;
       if (over) drive = { throttle: 0, steer: 0 };
       else {
         nav = avoidHazards(me, slot, time, true);
@@ -278,6 +345,13 @@ export function control(me: Bot, bots: Bot[], time: number) {
       drive = { throttle: -0.8, steer: 0 };
       break;
     }
+  }
+
+  // Reflex: a trap is charging or firing under me. Get off it, whatever the plan was, unless the plan is the trap.
+  const under = usingTrap ? null : trapUnder(me, time);
+  if (under && !(me.holding && intent.maneuver === "drag_to_pit")) {
+    nav = trapExit(me, under);
+    drive = driveTo(me, nav, 1);
   }
 
   // Reflex: during an aggressive maneuver, fire the one-shot weapon when something is in reach.

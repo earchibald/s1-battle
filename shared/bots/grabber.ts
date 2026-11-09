@@ -48,6 +48,15 @@ export const GRABBER_BUILD: BotBuild = {
         dangerIfThreat: 0.3,
         note: "feed {held} to the saws",
       },
+      {
+        id: "trap",
+        when: [HOLDING, { s: "arena.trapLive", op: "is", v: true }, { s: "arena.trapDist", op: "<", v: 2.5 }],
+        maneuver: "drag_to_saws",
+        target: "held",
+        danger: 0.3,
+        dangerIfThreat: 0.3,
+        note: "a trap is about to fire, park {held} on it",
+      },
       { id: "squeeze", when: [HOLDING], maneuver: "crush", target: "held", danger: 0.2, dangerIfThreat: 0.2, note: "squeeze {held}" },
       {
         id: "grab",
@@ -117,7 +126,7 @@ export const GRABBER_BUILD: BotBuild = {
         },
         drag_to_saws: {
           description:
-            "While holding an opponent, drag it onto the arena's kill saws so the floor blades chew it up. Best when the saws are up or about to rise.",
+            "While holding an opponent, drag it onto the arena's kill saws so the floor blades chew it up; if a flame vent, shock plate or the launch pad is live and closer, park it on that instead. Best when the saws are up or about to rise, or a trap right next to me is about to fire.",
           when: [HOLDING],
         },
         crush: { description: "While holding an opponent, stay put and squeeze it in the jaws for steady damage.", when: [HOLDING] },

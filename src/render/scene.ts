@@ -4,7 +4,7 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { ARENA, pitOpenAmount, pitPhase, sawRaise } from "../sim/arena";
+import { ARENA, padCharge, padSinceFire, pitOpenAmount, pitPhase, sawRaise, shockCharge, shockPhase, ventLevel, ventPhase } from "../sim/arena";
 import type { Vec } from "../sim/math";
 
 /** sim (x, y) -> three (x, h, -y). Sim "north" (+y) is away from the camera. */
@@ -29,6 +29,12 @@ export class ArenaScene {
   private sawDiscs: THREE.Mesh[] = [];
   private sawLights: THREE.PointLight[] = [];
   private wallRail: THREE.MeshStandardMaterial;
+  // traps
+  private vents: { ring: THREE.MeshStandardMaterial; flame: THREE.Mesh; core: THREE.Mesh; light: THREE.PointLight }[] = [];
+  private padHinge = new THREE.Group();
+  private padArrows!: THREE.MeshBasicMaterial;
+  private padLight!: THREE.PointLight;
+  private shockPlates: { grid: THREE.MeshBasicMaterial; arcs: THREE.Line[]; posts: THREE.MeshStandardMaterial; light: THREE.PointLight }[] = [];
 
   // cinematic camera state
   private camAngle = Math.PI * 0.5 + 0.35;
@@ -71,6 +77,7 @@ export class ArenaScene {
     this.pitGlow = pit.glow;
     this.pitLight = pit.light;
     this.buildSaws();
+    this.buildTraps();
     this.buildStadium();
     this.resize();
     window.addEventListener("resize", () => this.resize());
@@ -190,6 +197,33 @@ export class ArenaScene {
     };
     stripes(ARENA.pit.center.x, ARENA.pit.center.y, ARENA.pit.half, ARENA.pit.half);
     for (const s of ARENA.saws.slots) stripes(s.center.x, s.center.y, s.halfX, s.halfY);
+    // Traps: stripes round the launch pad, scorched rings round the vents, a blue border round each shock plate.
+    stripes(ARENA.pad.center.x, ARENA.pad.center.y, ARENA.pad.half, ARENA.pad.half);
+    const fx = (x: number) => (x + ARENA.half) * px;
+    const fy = (y: number) => (ARENA.half - y) * px;
+    for (const v of ARENA.vents.slots) {
+      const r = ARENA.vents.radius * px;
+      const scorch = g.createRadialGradient(fx(v.x), fy(v.y), r * 0.6, fx(v.x), fy(v.y), r * 1.9);
+      scorch.addColorStop(0, "rgba(0,0,0,0.75)");
+      scorch.addColorStop(1, "rgba(0,0,0,0)");
+      g.fillStyle = scorch;
+      g.beginPath();
+      g.arc(fx(v.x), fy(v.y), r * 1.9, 0, Math.PI * 2);
+      g.fill();
+      g.strokeStyle = "rgba(255,122,26,0.8)";
+      g.lineWidth = 4;
+      g.setLineDash([10, 8]);
+      g.beginPath();
+      g.arc(fx(v.x), fy(v.y), r + 6, 0, Math.PI * 2);
+      g.stroke();
+      g.setLineDash([]);
+    }
+    for (const sp of ARENA.shock.plates) {
+      const h = ARENA.shock.half * px;
+      g.strokeStyle = "rgba(102,221,255,0.85)";
+      g.lineWidth = 5;
+      g.strokeRect(fx(sp.center.x) - h - 6, fy(sp.center.y) - h - 6, h * 2 + 12, h * 2 + 12);
+    }
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = 8;
@@ -341,6 +375,196 @@ export class ArenaScene {
     }
   }
 
+  /** Flame vents, launch pad, shock plates. Geometry comes from ARENA; `updateArena` animates them. */
+  private buildTraps() {
+    // --- Flame vents: a grate, a ring that glows as a warning, and a flame cone that grows when lit.
+    const grateMat = new THREE.MeshStandardMaterial({ color: 0x0c0d10, roughness: 0.9, metalness: 0.4 });
+    const V = ARENA.vents;
+    for (const slot of V.slots) {
+      const c = toWorld(slot);
+      const grate = new THREE.Mesh(new THREE.CylinderGeometry(V.radius, V.radius, 0.04, 28), grateMat);
+      grate.position.set(c.x, 0.02, c.z);
+      grate.receiveShadow = true;
+      this.scene.add(grate);
+      for (let i = -2; i <= 2; i++) {
+        const w = Math.sqrt(Math.max(0.01, V.radius * V.radius - (i * 0.3) ** 2)) * 2 - 0.1;
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(w, 0.03, 0.07), new THREE.MeshStandardMaterial({ color: 0x3a3f48, roughness: 0.5, metalness: 0.8 }));
+        bar.position.set(c.x, 0.05, c.z + i * 0.3);
+        this.scene.add(bar);
+      }
+      const ringMat = new THREE.MeshStandardMaterial({ color: 0x2a1206, emissive: 0xff6a1a, emissiveIntensity: 0.25 });
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(V.radius, 0.06, 8, 36), ringMat);
+      ring.rotation.x = Math.PI / 2;
+      ring.position.set(c.x, 0.05, c.z);
+      this.scene.add(ring);
+      const flameMat = (color: number, opacity: number) =>
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+      const flame = new THREE.Mesh(new THREE.ConeGeometry(V.radius * 0.8, 1, 18, 1, true), flameMat(0xff5a12, 0.7));
+      const core = new THREE.Mesh(new THREE.ConeGeometry(V.radius * 0.42, 1, 12, 1, true), flameMat(0xffe08a, 0.85));
+      flame.position.set(c.x, 0, c.z);
+      core.position.set(c.x, 0, c.z);
+      flame.visible = core.visible = false;
+      this.scene.add(flame, core);
+      const light = new THREE.PointLight(0xff7a1a, 0, 7, 1.5);
+      light.position.set(c.x, 1.0, c.z);
+      this.scene.add(light);
+      this.vents.push({ ring: ringMat, flame, core, light });
+    }
+
+    // --- Launch pad: a plate hinged on its south edge that snaps up toward the pit. Chevrons show the throw.
+    const P = ARENA.pad;
+    const pc = toWorld(P.center);
+    const well = new THREE.Mesh(new THREE.BoxGeometry(P.half * 2, 0.02, P.half * 2), new THREE.MeshStandardMaterial({ color: 0x050506, roughness: 1 }));
+    well.position.set(pc.x, 0.011, pc.z);
+    this.scene.add(well);
+    this.padHinge.position.set(pc.x, 0.02, pc.z + P.half); // south edge (sim -y is three +z)
+    const plate = new THREE.Mesh(
+      new THREE.BoxGeometry(P.half * 2 - 0.06, 0.1, P.half * 2 - 0.06),
+      new THREE.MeshStandardMaterial({ color: 0x8a6a1c, roughness: 0.4, metalness: 0.85 }),
+    );
+    plate.position.set(0, 0.05, -P.half);
+    plate.castShadow = true;
+    plate.receiveShadow = true;
+    this.padHinge.add(plate);
+    const ac = document.createElement("canvas");
+    ac.width = ac.height = 256;
+    const ag = ac.getContext("2d")!;
+    ag.strokeStyle = "#ffffff";
+    ag.lineWidth = 22;
+    ag.lineJoin = "miter";
+    for (let i = 0; i < 3; i++) {
+      const y = 70 + i * 62; // canvas top is north: the chevrons point at the pit
+      ag.beginPath();
+      ag.moveTo(56, y + 40);
+      ag.lineTo(128, y - 20);
+      ag.lineTo(200, y + 40);
+      ag.stroke();
+    }
+    const arrowTex = new THREE.CanvasTexture(ac);
+    this.padArrows = new THREE.MeshBasicMaterial({ map: arrowTex, color: 0xffd166, transparent: true, opacity: 0.35, depthWrite: false });
+    const arrows = new THREE.Mesh(new THREE.PlaneGeometry(P.half * 2 - 0.2, P.half * 2 - 0.2), this.padArrows);
+    arrows.rotation.x = -Math.PI / 2;
+    arrows.position.set(0, 0.104, -P.half);
+    this.padHinge.add(arrows);
+    this.scene.add(this.padHinge);
+    this.padLight = new THREE.PointLight(0xffc040, 0, 6, 1.5);
+    this.padLight.position.set(pc.x, 0.7, pc.z);
+    this.scene.add(this.padLight);
+
+    // --- Shock plates: a dark panel with a glowing grid, four emitter posts, and arcs that crawl while charging.
+    const S = ARENA.shock;
+    const gc = document.createElement("canvas");
+    gc.width = gc.height = 256;
+    const gg = gc.getContext("2d")!;
+    gg.strokeStyle = "#ffffff";
+    gg.lineWidth = 5;
+    for (let i = 0; i <= 6; i++) {
+      const q = 8 + (i * 240) / 6;
+      gg.beginPath();
+      gg.moveTo(q, 8);
+      gg.lineTo(q, 248);
+      gg.moveTo(8, q);
+      gg.lineTo(248, q);
+      gg.stroke();
+    }
+    const gridTex = new THREE.CanvasTexture(gc);
+    for (const sp of S.plates) {
+      const c = toWorld(sp.center);
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(S.half * 2, 0.05, S.half * 2), new THREE.MeshStandardMaterial({ color: 0x10202c, roughness: 0.35, metalness: 0.9 }));
+      panel.position.set(c.x, 0.025, c.z);
+      panel.receiveShadow = true;
+      this.scene.add(panel);
+      const grid = new THREE.MeshBasicMaterial({ map: gridTex, color: 0x66ddff, transparent: true, opacity: 0.18, blending: THREE.AdditiveBlending, depthWrite: false });
+      const gridMesh = new THREE.Mesh(new THREE.PlaneGeometry(S.half * 2, S.half * 2), grid);
+      gridMesh.rotation.x = -Math.PI / 2;
+      gridMesh.position.set(c.x, 0.056, c.z);
+      this.scene.add(gridMesh);
+      const posts = new THREE.MeshStandardMaterial({ color: 0x0b2b36, emissive: 0x66ddff, emissiveIntensity: 0.3 });
+      for (const [sx, sz] of [
+        [-1, -1],
+        [1, -1],
+        [1, 1],
+        [-1, 1],
+      ]) {
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 0.16, 10), posts);
+        post.position.set(c.x + sx * (S.half + 0.12), 0.08, c.z + sz * (S.half + 0.12));
+        this.scene.add(post);
+      }
+      const arcs: THREE.Line[] = [];
+      for (let i = 0; i < 5; i++) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(7 * 3), 3));
+        const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xbff3ff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
+        line.position.set(c.x, 0, c.z);
+        line.visible = false;
+        line.frustumCulled = false;
+        this.scene.add(line);
+        arcs.push(line);
+      }
+      const light = new THREE.PointLight(0x66ddff, 0, 8, 1.5);
+      light.position.set(c.x, 0.8, c.z);
+      this.scene.add(light);
+      this.shockPlates.push({ grid, arcs, posts, light });
+    }
+  }
+
+  private updateTraps(t: number) {
+    // Vents: the ring blinks while a vent is about to light, then the flame stands up and flickers.
+    this.vents.forEach((v, i) => {
+      const phase = ventPhase(i, t);
+      const level = ventLevel(i, t);
+      const blink = Math.sin(t * 22) > 0 ? 1 : 0.3;
+      v.ring.emissiveIntensity = phase === "erupting" ? 4 : phase === "warning" ? 0.6 + blink * 2.4 : 0.25;
+      const lit = level > 0.01;
+      v.flame.visible = v.core.visible = lit;
+      if (lit) {
+        const flick = 1 + Math.sin(t * 31 + i * 1.7) * 0.08 + Math.sin(t * 47 + i) * 0.05;
+        const h = level * 3.0 * flick;
+        const wide = 0.55 + level * 0.45;
+        v.flame.scale.set(wide, h, wide);
+        v.flame.position.y = h / 2;
+        v.core.scale.set(wide, h * 0.7, wide);
+        v.core.position.y = (h * 0.7) / 2;
+      }
+      v.light.intensity = phase === "erupting" ? 22 * level : level * 6;
+    });
+
+    // Launch pad: chevrons pulse faster as the charge builds; the plate snaps up on the kick and settles.
+    const charge = padCharge(t);
+    const since = padSinceFire(t);
+    const kick = since < 0.07 ? since / 0.07 : since < 0.7 ? Math.max(0, 1 - (since - 0.07) / 0.63) ** 2 : 0;
+    this.padHinge.rotation.x = kick * 0.85;
+    const pulse = charge > 0 ? (Math.sin(t * (10 + charge * 30)) > 0 ? 1 : 0.35) : 0;
+    this.padArrows.opacity = charge > 0 ? 0.35 + pulse * 0.65 : 0.3 + kick * 0.7;
+    this.padLight.intensity = charge > 0 ? 2 + charge * 8 * pulse : kick * 25;
+
+    // Shock plates: the grid brightens with charge, arcs crawl between random points, the discharge flashes.
+    this.shockPlates.forEach((sp, i) => {
+      const phase = shockPhase(i, t);
+      const c = shockCharge(i, t);
+      const live = phase === "live";
+      sp.grid.opacity = live ? 1 : 0.18 + c * 0.6;
+      sp.posts.emissiveIntensity = live ? 6 : 0.3 + c * 3;
+      sp.light.intensity = live ? 45 : c * 7;
+      const n = live ? sp.arcs.length : phase === "charging" ? 1 + Math.floor(c * 3) : 0;
+      const half = ARENA.shock.half;
+      sp.arcs.forEach((line, k) => {
+        line.visible = k < n;
+        if (!line.visible) return;
+        const pos = line.geometry.getAttribute("position") as THREE.BufferAttribute;
+        const a = { x: (Math.random() * 2 - 1) * half, z: (Math.random() * 2 - 1) * half };
+        const b = { x: (Math.random() * 2 - 1) * half, z: (Math.random() * 2 - 1) * half };
+        const tall = live ? 0.9 : 0.25 + c * 0.3;
+        for (let j = 0; j < pos.count; j++) {
+          const f = j / (pos.count - 1);
+          const mid = Math.sin(f * Math.PI);
+          pos.setXYZ(j, a.x + (b.x - a.x) * f + (Math.random() - 0.5) * 0.3 * mid, 0.08 + mid * tall * Math.random(), a.z + (b.z - a.z) * f + (Math.random() - 0.5) * 0.3 * mid);
+        }
+        pos.needsUpdate = true;
+      });
+    });
+  }
+
   private buildStadium() {
     // A ring of light panels around the arena to give the bloom something to chew on.
     const n = 36;
@@ -390,6 +614,7 @@ export class ArenaScene {
     for (const d of this.sawDiscs) d.rotation.x += dt * (6 + raise * 30);
     for (const l of this.sawLights) l.intensity = raise * 5;
     this.wallRail.emissiveIntensity = 1.3 + Math.sin(fightTime * 2) * 0.3;
+    this.updateTraps(fightTime);
   }
 
   /** Cinematic camera: frames the action, slowly orbits, shakes on hits. */

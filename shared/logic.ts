@@ -105,6 +105,12 @@ export function subjectValue(key: SubjectKey, c: EvalContext): CondValue | "none
       return f.sawsUp || f.sawsSoon;
     case "arena.sawsDist":
       return f.sawsDist;
+    case "arena.trapLive":
+      return f.trapLive;
+    case "arena.trapDist":
+      return f.trapLive ? f.trapDist : Infinity;
+    case "target.trapDist":
+      return t && f.trapLive ? t.trapDist : Infinity;
     case "arena.timeLeft":
       return f.timeLeft;
   }

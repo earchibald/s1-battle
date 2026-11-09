@@ -81,6 +81,8 @@ export class Bot {
   /** Seconds left on fire (flamethrower), and who lit it. */
   burn = 0;
   burnBy: string | null = null;
+  /** Last fightTime a flame vent caught us, so the "caught" event fires once per visit. */
+  ventedAt = -Infinity;
 
   weapon: WeaponState = {
     spin: 0,

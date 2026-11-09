@@ -28,6 +28,8 @@ export interface OpponentFacts {
   inReach: boolean;
   /** Their weapon is ready, pointed at me, and they are close. */
   threatening: boolean;
+  /** Their distance to the edge of the nearest trap that is charging or firing (99 when none is). */
+  trapDist: number;
 }
 export interface Facts {
   hpFrac: number;
@@ -44,6 +46,10 @@ export interface Facts {
   sawsUp: boolean;
   sawsSoon: boolean;
   sawsDist: number;
+  /** A flame vent, the launch pad or a shock plate is telegraphing or firing right now. */
+  trapLive: boolean;
+  /** My distance to the edge of the nearest such trap (99 when none is live). */
+  trapDist: number;
   timeLeft: number;
   opponents: OpponentFacts[];
 }

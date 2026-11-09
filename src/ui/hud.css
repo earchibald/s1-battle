@@ -34,6 +34,8 @@ button.garage:hover { background: rgba(200,176,106,.26); }
 .hud-phase { font-size: 11px; font-weight: 800; letter-spacing: .3em; color: var(--jev); height: 14px; }
 .hud-phase.count { font-size: 13px; }
 .hud-hazards { display: flex; flex-direction: column; gap: 4px; }
+.hz-row { display: flex; gap: 4px; }
+.hz-row .hz { padding: 3px 6px; }
 .hz { font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .1em; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--panel-border); background: var(--panel); color: var(--muted); }
 .hz.open, .hz.saws-up { color: #fff; background: rgba(255, 60, 60, 0.6); border-color: #ff5c5c; animation: pulse .6s infinite; }
 .hz.warning, .hz.saws-rising { color: #ffd166; border-color: #ffd166; animation: pulse .4s infinite; }

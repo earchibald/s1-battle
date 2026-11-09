@@ -1,5 +1,21 @@
 import type { BotDef } from "@shared/bots/common";
-import { ARENA, insidePit, onSaws, pitPhase, sawPhase, type PitPhase, type SawPhase } from "./arena";
+import {
+  ARENA,
+  insidePit,
+  onPad,
+  onSaws,
+  onShockPlate,
+  onVent,
+  padFireCount,
+  padPhase,
+  pitPhase,
+  sawPhase,
+  shockPhase,
+  shockPulseCount,
+  ventPhase,
+  type PitPhase,
+  type SawPhase,
+} from "./arena";
 import { Bot } from "./bot";
 import { control } from "./controller";
 import type { SimEvent } from "./events";
@@ -39,6 +55,12 @@ export class World {
   private lastPit: PitPhase = "closed";
   private lastSaws: SawPhase = "down";
   private sawSparkTick = 0;
+  // Trap bookkeeping. Primitives only, so World.clone copies them for free.
+  private lastVents = "";
+  private lastPadCharging = false;
+  private lastPadFires = 0;
+  private lastShockCharging = -1;
+  private lastShockPulses = 0;
 
   constructor(lineup: BotDef[], seed = 1) {
     this.rng = makeRng(seed);
@@ -292,6 +314,7 @@ export class World {
     this.sawSparkTick += dt;
     const spark = this.sawSparkTick > 0.22;
     if (spark) this.sawSparkTick = 0;
+    this.traps(ctx, dt, spark);
 
     for (const b of this.bots) {
       if (!b.alive) continue;
@@ -323,6 +346,94 @@ export class World {
           b.launchedBy = by?.id ?? null;
         }
       }
+    }
+  }
+
+  /** Whoever gets the credit when the arena hurts `b`: its holder, or a bot that hit it moments ago. */
+  private creditFor(b: Bot, window = 3): Bot | null {
+    if (b.heldBy) return b.heldBy;
+    return this.fightTime - b.lastHitAt < window ? this.bot(b.lastHitBy ?? "") ?? null : null;
+  }
+
+  /** Flame vents, launch pad and shock plates. Timing comes from arena.ts; this applies it to the bots. */
+  private traps(ctx: WeaponContext, dt: number, spark: boolean) {
+    const t = this.fightTime;
+
+    // Flame vents: continuous burn while a vent is lit.
+    const V = ARENA.vents;
+    const phases = V.slots.map((_, i) => ventPhase(i, t));
+    const key = phases.map((p) => p[0]).join("");
+    if (key !== this.lastVents) {
+      const quiet = (k: string) => !/[we]/.test(k);
+      if (quiet(this.lastVents) && !quiet(key)) this.emit({ type: "vents_warning" });
+      phases.forEach((p, i) => {
+        if (p === "erupting" && this.lastVents[i] !== "e") this.emit({ type: "vent_erupt", vent: i, at: { ...V.slots[i] } });
+      });
+      this.lastVents = key;
+    }
+    if (phases.includes("erupting")) {
+      for (const b of this.bots) {
+        if (!b.alive || b.airborne) continue;
+        const i = onVent(b.p, b.radius);
+        if (i < 0 || phases[i] !== "erupting") continue;
+        const by = this.creditFor(b);
+        if (t - b.ventedAt > 3) this.emit({ type: "trapped", trap: "vent", bot: b.id, by: by?.id ?? null, at: { ...b.p } });
+        b.ventedAt = t;
+        if (b.burn <= 0) b.burnBy = by?.id ?? null;
+        b.burn = Math.max(b.burn, V.burnTime);
+        applyDamage(ctx, b, by, V.dps * dt, "vent", b.p, spark ? 0.7 : 0);
+      }
+    }
+
+    // Launch pad: one kick at the instant the charge completes.
+    const P = ARENA.pad;
+    const charging = padPhase(t) === "charging";
+    if (charging && !this.lastPadCharging) this.emit({ type: "pad_warning", at: { ...P.center } });
+    this.lastPadCharging = charging;
+    const fires = padFireCount(t);
+    if (fires !== this.lastPadFires) {
+      this.lastPadFires = fires;
+      let caught = 0;
+      for (const b of this.bots) {
+        if (!b.alive || b.airborne || !onPad(b.p, b.radius * 0.3)) continue;
+        const by = this.creditFor(b);
+        if (b.heldBy) releaseHold(ctx, b.heldBy, "stunned");
+        if (b.holding) releaseHold(ctx, b, "stunned");
+        // Heavy bots leave the pad more slowly and land shorter.
+        const massFactor = Math.min(1, 1.25 / b.mass);
+        b.airborne = true;
+        b.vz = P.launchVz * massFactor;
+        b.launchedBy = by?.id ?? null;
+        b.vel = { x: 0, y: 0 };
+        b.knock.x += P.dir.x * P.launchForward * massFactor;
+        b.knock.y += P.dir.y * P.launchForward * massFactor;
+        caught++;
+        this.emit({ type: "trapped", trap: "pad", bot: b.id, by: by?.id ?? null, at: { ...b.p } });
+      }
+      this.emit({ type: "pad_fire", at: { ...P.center }, caught });
+    }
+
+    // Shock plates: one discharge per pulse, alternating plates.
+    const S = ARENA.shock;
+    const chargingPlate = S.plates.findIndex((_, i) => shockPhase(i, t) === "charging");
+    if (chargingPlate !== this.lastShockCharging) {
+      if (chargingPlate >= 0) this.emit({ type: "shock_warning", plate: chargingPlate, at: { ...S.plates[chargingPlate].center } });
+      this.lastShockCharging = chargingPlate;
+    }
+    const pulses = shockPulseCount(t);
+    if (pulses !== this.lastShockPulses) {
+      this.lastShockPulses = pulses;
+      const plate = (pulses - 1) % S.plates.length;
+      let caught = 0;
+      for (const b of this.bots) {
+        if (!b.alive || b.airborne || !onShockPlate(b.p, b.radius, plate)) continue;
+        const by = this.creditFor(b);
+        caught++;
+        this.emit({ type: "trapped", trap: "shock", bot: b.id, by: by?.id ?? null, at: { ...b.p } });
+        b.stunFor(S.stun);
+        applyDamage(ctx, b, by, S.damage, "shock", b.p, 1);
+      }
+      this.emit({ type: "shock_fire", plate, at: { ...S.plates[plate].center }, caught });
     }
   }
 

@@ -98,7 +98,7 @@ export const FLIPPER_BUILD: BotBuild = {
         {
           key: "flip_toward_hazard",
           prompt:
-            "If `me` flips the nearest opponent right now, would it be thrown toward the open pit or toward the kill saws? Yes only when a hazard is close and in roughly the same direction as that opponent.",
+            "If `me` flips the nearest opponent right now, would it be thrown toward the open pit, the kill saws, or a flame vent or shock plate that is about to fire? Yes only when a hazard is close and in roughly the same direction as that opponent.",
           when: [{ s: "me.ready", op: "is", v: true }],
         },
       ],

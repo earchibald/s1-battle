@@ -304,6 +304,12 @@ function handleEvent(e: SimEvent) {
         scene.kick(0.6);
         sound.slam(e.power * 9, crit);
         shout = e.amount >= 10 || crit;
+      } else if (e.weapon === "vent") {
+        if (e.power > 0) effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 0.5, 0xff7a1a);
+      } else if (e.weapon === "shock") {
+        effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 0.9, 0x9fe8ff);
+        effects.ring(at, 0x66ddff, 1.2);
+        scene.kick(0.4);
       }
       if (crit) {
         // Crits get the full treatment: extra sparks, a chime, a camera kick, a beat of slow motion.
@@ -313,8 +319,8 @@ function handleEvent(e: SimEvent) {
         triggerSlowmo(0.45, 0.4);
         sound.crit();
       } else if (e.amount >= 20) sound.crowdReact(0.3);
-      if (shout) callouts.show(e.at, e.weapon, { size: crit ? 1.6 : e.amount >= 30 ? 1.4 : 1, crit, now });
-      if (e.amount >= 2.5) labels.damage(e.at, e.amount, crit ? "big" : e.amount > 20 ? "big" : e.weapon === "saw" ? "saw" : e.weapon === "saws" ? "hazard" : e.weapon === "torch" ? "fire" : "");
+      if (shout && e.weapon !== "vent" && e.weapon !== "shock") callouts.show(e.at, e.weapon, { size: crit ? 1.6 : e.amount >= 30 ? 1.4 : 1, crit, now });
+      if (e.amount >= 2.5) labels.damage(e.at, e.amount, crit ? "big" : e.amount > 20 ? "big" : e.weapon === "saw" ? "saw" : e.weapon === "saws" || e.weapon === "shock" ? "hazard" : e.weapon === "torch" || e.weapon === "vent" ? "fire" : "");
       break;
     }
     case "strike":
@@ -350,6 +356,29 @@ function handleEvent(e: SimEvent) {
       break;
     case "saws_rising":
       sound.sawsRising();
+      break;
+    // Traps: a cue when each one telegraphs and fires; the crowd only reacts when a bot is actually caught.
+    case "vent_erupt":
+      effects.sparkBurst(toWorld(e.at, 0.2), new THREE.Vector3(0, 1, 0), 0.7, 0xff7a1a);
+      sound.ventErupt();
+      break;
+    case "pad_warning":
+      sound.padCharge();
+      break;
+    case "pad_fire":
+      effects.ring(toWorld(e.at, 0.1), 0xffd166, e.caught ? 1.6 : 1);
+      if (e.caught) scene.kick(0.5);
+      sound.padFire(e.caught > 0);
+      break;
+    case "shock_warning":
+      sound.shockCharge();
+      break;
+    case "shock_fire":
+      effects.ring(toWorld(e.at, 0.1), 0x66ddff, e.caught ? 1.8 : 1.2);
+      sound.shockFire(e.caught > 0);
+      break;
+    case "trapped":
+      sound.crowdReact(e.by ? 0.6 : 0.35);
       break;
     case "match_start":
       sound.countdownBeep(true);

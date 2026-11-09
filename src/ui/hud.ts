@@ -1,6 +1,6 @@
 import type { Maneuver } from "@shared/types";
 import type { Brain, BrainMode } from "../brain/brains";
-import { ARENA, pitCountdown, pitPhase, sawPhase } from "../sim/arena";
+import { ARENA, padPhase, pitCountdown, pitPhase, sawPhase, shockPhase, ventsPhase } from "../sim/arena";
 import type { Bot } from "../sim/bot";
 import type { World } from "../sim/world";
 
@@ -75,6 +75,21 @@ interface Card {
   probs: HTMLElement;
   latency: HTMLElement;
   danger: HTMLElement;
+}
+
+/** Compact chips for the three traps: grey when idle, amber while telegraphing, red while firing. */
+function trapChips(t: number): string {
+  const vents = ventsPhase(t);
+  const pad = padPhase(t);
+  const plates = ARENA.shock.plates.map((_, i) => shockPhase(i, t));
+  const plate = plates.findIndex((p) => p !== "idle");
+  const shock = plate < 0 ? "" : plates[plate] === "live" ? "open" : "warning";
+  return `
+      <div class="hz-row">
+      <div class="hz ${vents === "erupting" ? "open" : vents === "warning" ? "warning" : ""}" title="Flame vents">VENTS</div>
+      <div class="hz ${pad === "charging" ? "warning" : ""}" title="Launch pad">PAD</div>
+      <div class="hz ${shock}" title="Shock plates">SHOCK${plate < 0 ? "" : plate === 0 ? " W" : " E"}</div>
+      </div>`;
 }
 
 export class Hud {
@@ -248,7 +263,7 @@ export class Hud {
     const saws = sawPhase(t);
     this.hazardsEl.innerHTML = `
       <div class="hz ${pit}">PIT ${pit === "open" ? "OPEN" : pit === "warning" ? "OPENING" : `in ${Math.ceil(pc)}s`}</div>
-      <div class="hz saws-${saws}">SAWS ${saws === "up" ? "UP" : saws === "rising" ? "RISING" : "down"}</div>`;
+      <div class="hz saws-${saws}">SAWS ${saws === "up" ? "UP" : saws === "rising" ? "RISING" : "down"}</div>${trapChips(t)}`;
 
     // Rosters change between matches now, so drop cards for bots that are not in this one.
     for (const [id, c] of this.cards) {
