@@ -49,8 +49,20 @@ and buy a beat of slow motion. This is what makes Jev's `flank` decision worth c
 thuds, pneumatic flips, metallic wall clangs, a pit klaxon, a crowd that swells on big moments, and a slide
 whistle for anyone who goes down the pit. Click anywhere once to unlock audio; `M` or the 🔊 button mutes.
 
-**Callouts** (`src/ui/callouts.ts`): comic-book "WHAM!" / "SHRED!" / "K.O.!" bursts anchored to the hit for
-the hits worth shouting about.
+**Callouts** (`src/ui/callouts.ts`, rules in `src/ui/calloutPolicy.ts`): a comic-book "K.O.!" / "WHAM!" burst with
+a plain caption ("RIPSAW shreds CLAMP · 24"), reserved for eliminations, critical hits of 20+ and hits of 30+, with
+a 4 s breather between non-elimination callouts. That is about 8 per match (the old rules fired about 42);
+`npx tsx scripts/callout-survey.ts` measures it.
+
+**Event log** (`src/ui/eventlog.ts`): every bot thought (maneuver, target, brain, the brain's own note, runner-up
+options, Jev latency) and every action, hazard and match line, kept for the session. It sits as a tab in the
+lower right; open it with a click or `L` to scroll back at your own pace, search with `/`, filter by category
+(thoughts, actions, hazards, match) or by bot, limit to this match, or copy the filtered log as text. Scrolling
+up pauses auto-follow and a "↓ N new" pill brings you back. The on-screen ticker now carries only actions, hazards
+and match beats.
+
+**Version.** The top bar shows the version and build commit (a trailing `+` means uncommitted changes); click it for
+what's new. Versions come from `package.json`; release notes live in `CHANGELOG.md`.
 
 Match rules: 4-bot free-for-all, 3-minute cap, last bot standing wins; on time-out the judges score health
 then damage dealt. Matches typically run 40–90 s.
@@ -130,7 +142,8 @@ server/      Express: /api/decide proxies Jev (key stays server-side), /api/heal
 src/sim/     deterministic simulation: physics, weapons, hazards, perception, controller, match rules, quicksim
 src/brain/   decision scheduler (cadence, event nudges, stale-answer guard, fallback); trained/ (network + style policy)
 src/render/  Three.js arena, procedural bot models (armor plates, wheel size and rig scale follow the build)
-src/ui/      HUD cards, ticker/commentary, labels, comic callouts, result screen, designer.ts (the Garage), library.ts
+src/ui/      HUD cards, ticker/commentary, event log, labels, comic callouts (+ policy), result screen,
+             designer.ts (the Garage), library.ts
 src/audio/   procedural Web Audio sound engine (no asset files)
 scripts/     probe-jev.ts (latency check), headless.ts (tournaments; stock kinds or a garage export), balance.ts (win share sweep)
              train/ (rollout data generation, PyTorch training, parity/fork checks, brain-vs-brain tournaments)
@@ -139,8 +152,8 @@ public/models/trained-brain.json   the shipped trained-brain weights (float16, ~
 
 ## Controls
 
-Space pause · N new match · G garage · C auto/free camera · D debug nav lines · M mute · 1/2/3 speed ·
-J all Jev · T all trained · B all baseline. Click a bot card's brain badge to cycle that bot Jev → Trained → Baseline.
+Space pause · N new match · G garage · L event log · / search the log · Esc close it · C auto/free camera ·
+D debug nav lines · M mute · 1/2/3 speed · J all Jev · T all trained · B all baseline. Click a bot card's brain badge to cycle that bot Jev → Trained → Baseline.
 
 ## Tuning and extending
 

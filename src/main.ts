@@ -14,11 +14,12 @@ import { commentate } from "./ui/commentary";
 import { Hud, maneuverLabel, type JevInfo } from "./ui/hud";
 import { Labels } from "./ui/labels";
 import { Callouts } from "./ui/callouts";
+import { CalloutDirector } from "./ui/calloutPolicy";
 import { Designer, uniqueNamed } from "./ui/designer";
 import { SoundEngine } from "./audio/sound";
 import { pitPhase, sawRaise } from "./sim/arena";
 import type { HammerPhase } from "./sim/bot";
-import type { BotKind } from "@shared/types";
+import type { BotKind, Maneuver } from "@shared/types";
 
 /**
  * S1 Arena entry point. Fixed-step simulation, async brains, Three.js rendering, HTML HUD, and the Garage
@@ -36,6 +37,8 @@ const effects = new Effects();
 scene.scene.add(effects.group);
 const labels = new Labels(document.getElementById("labels")!, scene.camera);
 const callouts = new Callouts(document.getElementById("callouts")!, scene.camera, () => world.bots.filter((b) => b.alive).map((b) => b.p));
+/** Decides which few moments get a comic callout (eliminations, big crits, huge hits) and paces them. */
+let director = new CalloutDirector();
 const sound = new SoundEngine();
 // Browsers gate audio behind a gesture; the first click or key anywhere unlocks it.
 const unlock = () => sound.unlock();
@@ -131,7 +134,7 @@ const hud = new Hud(document.getElementById("hud")!, {
     const b = brains.get(id);
     if (!b) return;
     b.mode = BRAIN_MODES[(BRAIN_MODES.indexOf(b.mode) + 1) % BRAIN_MODES.length];
-    hud.ticker(`${id} switched to ${MODE_LABEL[b.mode]} brain`, MODE_CLS[b.mode]);
+    hud.ticker(`${id} switched to ${MODE_LABEL[b.mode]} brain`, MODE_CLS[b.mode], { cat: "match", bots: [id] });
   },
   setAllBrains(mode) {
     setAllBrains(mode);
@@ -169,7 +172,7 @@ const MODE_CLS: Record<BrainMode, string> = { jev: "jev", trained: "net", baseli
 function setAllBrains(mode: BrainMode) {
   defaultMode = mode;
   for (const b of brains.values()) b.mode = mode;
-  hud.ticker(`All bots now on ${MODE_LABEL[mode]} brains`, MODE_CLS[mode]);
+  hud.ticker(`All bots now on ${MODE_LABEL[mode]} brains`, MODE_CLS[mode], { cat: "match", bots: [] });
 }
 
 /** The trained brain's weights are a static file; the arena runs fine (baseline) until or unless they load. */
@@ -204,6 +207,8 @@ function startMatch() {
   lastHammerPhase.clear();
   lastReady.clear();
   hud.hideResult();
+  director = new CalloutDirector();
+  callouts.clear();
 
   // Each slot gets its own copy of the build so garage edits only reach the arena on deploy (or live-apply).
   const defs = roster.map((b) => defFromBuild(uniqueNamed(cloneBuild(b), roster)));
@@ -213,6 +218,7 @@ function startMatch() {
   lineupRotation++;
   world = new World(lineup, Date.now() % 100000);
   world.matchNumber = matchNumber++;
+  hud.setWorld(world);
   slotBots = [];
   order.forEach((slot, pos) => (slotBots[slot] = world.bots[pos].id));
   for (const bot of world.bots) {
@@ -237,6 +243,8 @@ function handleEvent(e: SimEvent) {
   for (const b of brains.values()) b.nudge(e);
   const line = commentate(e, world);
   if (line) hud.ticker(line.text, line.cls);
+  const callout = director.pick(e, world.fightTime);
+  if (callout && (e.type === "hit" || e.type === "destroyed" || e.type === "pitted")) callouts.show(e.at, callout);
 
   switch (e.type) {
     case "hit": {
@@ -246,35 +254,29 @@ function handleEvent(e: SimEvent) {
       const dir = victim && attacker ? toWorld(victim.p).sub(toWorld(attacker.p)).normalize() : new THREE.Vector3(0, 1, 0);
       const now = world.time;
       const crit = e.crit;
-      let shout = false;
       if (e.weapon === "saw") {
         effects.sparkBurst(at, dir, 0.4 + e.power * 0.6, 0xffd36e);
         sound.sawBite(e.power);
         lastBite.set(e.attacker, now);
-        shout = e.amount >= 22 || crit;
       } else if (e.weapon === "hammer") {
         effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 1, 0xffffff);
         effects.ring(at, 0xff6a3d, 1.4);
         scene.kick(0.9);
         triggerSlowmo(0.35, 0.45);
         sound.hammerStrike(true, crit);
-        shout = true;
       } else if (e.weapon === "flip") {
         effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 0.5, 0x9ad7ff);
         effects.ring(at, 0x6ee7ff, 1);
         scene.kick(0.4);
         sound.flip(true);
-        shout = true;
       } else if (e.weapon === "landing") {
         effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), Math.min(1, e.amount / 15), 0xbbbbbb);
         effects.ring(at, 0xffffff, 0.9);
         scene.kick(0.5);
         sound.landing(e.power, crit);
-        shout = e.amount >= 14 || crit;
       } else if (e.weapon === "wall") {
         effects.sparkBurst(at, dir.negate(), Math.min(1, e.amount / 12), 0xffaa66);
         scene.kick(0.25);
-        shout = e.amount >= 14 || crit;
       } else if (e.weapon === "saws") {
         if (e.power > 0) {
           effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 0.5, 0xffc864);
@@ -283,27 +285,23 @@ function handleEvent(e: SimEvent) {
       } else if (e.weapon === "crush") {
         effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), crit ? 0.5 : 0.15, 0x2dd4bf);
         sound.crush();
-        shout = crit && Math.random() < 0.3;
       } else if (e.weapon === "spinner") {
         effects.sparkBurst(at, dir, 0.6 + e.power * 0.6, 0xd9b3ff);
         effects.ring(at, 0xb57bff, 0.9);
         scene.kick(0.5);
         sound.spinnerHit(e.power, crit);
         lastBite.set(e.attacker, now);
-        shout = e.amount >= 12 || crit;
       } else if (e.weapon === "torch") {
         // power 0.2 is a lingering burn tick; a direct flame hit is 0.6.
         if (e.power > 0.3) {
           effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 0.5, 0xff7a1a);
           sound.torchHit();
         } else effects.smokePuff(at, false);
-        shout = crit || (e.power > 0.3 && Math.random() < 0.12);
       } else if (e.weapon === "ram") {
         effects.sparkBurst(at, dir, Math.min(1, e.amount / 14), 0xc8ffc0);
         effects.ring(at, 0x7cff6e, 1.1);
         scene.kick(0.6);
         sound.slam(e.power * 9, crit);
-        shout = e.amount >= 10 || crit;
       }
       if (crit) {
         // Crits get the full treatment: extra sparks, a chime, a camera kick, a beat of slow motion.
@@ -313,7 +311,6 @@ function handleEvent(e: SimEvent) {
         triggerSlowmo(0.45, 0.4);
         sound.crit();
       } else if (e.amount >= 20) sound.crowdReact(0.3);
-      if (shout) callouts.show(e.at, e.weapon, { size: crit ? 1.6 : e.amount >= 30 ? 1.4 : 1, crit, now });
       if (e.amount >= 2.5) labels.damage(e.at, e.amount, crit ? "big" : e.amount > 20 ? "big" : e.weapon === "saw" ? "saw" : e.weapon === "saws" ? "hazard" : e.weapon === "torch" ? "fire" : "");
       break;
     }
@@ -363,7 +360,6 @@ function handleEvent(e: SimEvent) {
       scene.kick(1.1);
       triggerSlowmo(0.25, 1.3);
       sound.destroyed();
-      callouts.show(e.at, "destroyed", { size: 2, now: world.time });
       break;
     }
     case "pitted": {
@@ -373,12 +369,27 @@ function handleEvent(e: SimEvent) {
       scene.kick(0.6);
       triggerSlowmo(0.3, 1.2);
       sound.pitted();
-      callouts.show(e.at, "pitted", { size: 1.6, now: world.time });
       break;
     }
     case "decision": {
       const bot = world.bot(e.bot);
-      if (bot) labels.say(e.bot, `${maneuverLabel(bot.intent.maneuver)}${bot.intent.target ? " → " + bot.intent.target : ""}`, e.source, world.time);
+      if (bot) {
+        const it = bot.intent;
+        const said = `${maneuverLabel(it.maneuver)}${it.target ? " → " + it.target : ""}`;
+        labels.say(e.bot, said, e.source, world.time);
+        // The note already carries the brain's own summary; add only what it leaves out.
+        const alts = Object.entries(it.probabilities)
+          .filter(([m, p]) => m !== it.maneuver && p >= 0.05)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 2)
+          .map(([m, p]) => `${maneuverLabel(m as Maneuver)} ${(p * 100).toFixed(0)}%`);
+        const extra = [
+          alts.length ? `also ${alts.join(", ")}` : "",
+          /danger/.test(e.note) ? "" : `danger ${(it.danger * 100).toFixed(0)}%`,
+          e.source === "jev" ? `${it.latencyMs} ms` : "",
+        ].filter(Boolean);
+        hud.thought(e.bot, said, extra.length ? `${e.note} · ${extra.join(" · ")}` : e.note, e.source);
+      }
       break;
     }
     case "match_end":
@@ -466,6 +477,17 @@ window.addEventListener("keydown", (ev) => {
     return;
   }
   switch (ev.key) {
+    case "l":
+    case "L":
+      hud.log.toggle();
+      return;
+    case "/":
+      ev.preventDefault();
+      hud.log.focusSearch();
+      return;
+    case "Escape":
+      hud.log.setOpen(false);
+      return;
     case "g":
     case "G":
       designer.show();

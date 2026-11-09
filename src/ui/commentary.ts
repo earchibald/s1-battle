@@ -65,7 +65,8 @@ export function commentate(e: SimEvent, world: World): { text: string; cls: stri
       if (!e.winner) return { text: "Nobody survives. It's a draw.", cls: "big" };
       return { text: e.reason === "judges" ? `Time! The judges give it to ${e.winner}.` : `${e.winner} WINS!`, cls: "big" };
     case "decision":
-      return { text: `${e.bot}: ${e.note}`, cls: e.source === "jev" ? "jev" : "base" };
+      // Thoughts go to the event log (main.ts -> hud.thought), never the ticker: there are several a second.
+      return null;
     default:
       return null;
   }

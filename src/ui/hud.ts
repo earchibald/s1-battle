@@ -3,6 +3,9 @@ import type { Brain, BrainMode } from "../brain/brains";
 import { ARENA, pitCountdown, pitPhase, sawPhase } from "../sim/arena";
 import type { Bot } from "../sim/bot";
 import type { World } from "../sim/world";
+import { BUILD_TIME, VERSION, VERSION_LABEL } from "../version";
+import changelog from "../../CHANGELOG.md?raw";
+import { EventLog, type LogInput } from "./eventlog";
 
 export interface HudCallbacks {
   toggleBrain(botId: string): void;
@@ -90,11 +93,18 @@ export class Hud {
   private resultEl: HTMLElement;
   private controls: Record<string, HTMLButtonElement> = {};
   private jevInfo: JevInfo = { configured: false, model: "" };
+  private world: World | null = null;
+  private newsEl: HTMLElement;
+  /** Every thought and commentary line of the session, browsable; a tab in the lower right until opened. */
+  readonly log: EventLog;
 
   constructor(root: HTMLElement, private cb: HudCallbacks) {
     root.innerHTML = `
       <div class="hud-top">
-        <div class="hud-match" id="hud-match">MATCH 1</div>
+        <div class="hud-id">
+          <div class="hud-match" id="hud-match">MATCH 1</div>
+          <button class="hud-version" id="hud-version" title="What's new"></button>
+        </div>
         <div class="hud-clock"><div class="hud-phase" id="hud-phase"></div><div class="hud-time" id="hud-time">3:00</div></div>
         <div class="hud-hazards" id="hud-hazards"></div>
       </div>
@@ -115,6 +125,7 @@ export class Hud {
         <button data-k="new" class="primary" title="N">⟳ New match</button>
       </div>
       <div class="hud-result hidden" id="hud-result"></div>
+      <div class="hud-news hidden" id="hud-news"></div>
     `;
     this.cardsEl = root.querySelector("#hud-cards")!;
     this.tickerEl = root.querySelector("#hud-ticker")!;
@@ -125,6 +136,12 @@ export class Hud {
     this.jevEl = root.querySelector("#hud-jev")!;
     this.netEl = root.querySelector("#hud-net")!;
     this.resultEl = root.querySelector("#hud-result")!;
+    this.newsEl = root.querySelector("#hud-news")!;
+    const ver = root.querySelector<HTMLButtonElement>("#hud-version")!;
+    ver.textContent = VERSION_LABEL;
+    if (BUILD_TIME) ver.title = `What's new · built ${new Date(BUILD_TIME).toLocaleString()}`;
+    ver.onclick = () => this.toggleNews();
+    this.log = new EventLog(root, () => this.logClock(), (open) => root.classList.toggle("log-open", open));
     root.querySelectorAll<HTMLButtonElement>("#hud-controls button").forEach((b) => {
       this.controls[b.dataset.k!] = b;
     });
@@ -182,13 +199,45 @@ export class Hud {
     return c;
   }
 
-  ticker(text: string, cls = "") {
+  /**
+   * One line of commentary: always recorded in the event log, and shown briefly in the on-screen ticker
+   * unless it is a bot's thought (those are too frequent to read in passing; the log has them all).
+   */
+  ticker(text: string, cls = "", meta: Omit<LogInput, "text" | "cls"> = {}) {
+    const entry = this.log.add({ ...meta, text, cls });
+    if (entry.cat === "thought") return;
     const line = document.createElement("div");
     line.className = `line ${cls}`;
     line.textContent = text;
     this.tickerEl.appendChild(line);
-    while (this.tickerEl.children.length > 7) this.tickerEl.firstElementChild?.remove();
-    setTimeout(() => line.classList.add("fade"), 6000);
+    while (this.tickerEl.children.length > 5) this.tickerEl.firstElementChild?.remove();
+    setTimeout(() => line.classList.add("fade"), 7000);
+  }
+
+  /** A bot's decision, for the event log only: "FLANK → CLAMP" plus the brain's full note. */
+  thought(botId: string, text: string, detail: string, source: string) {
+    this.log.add({ cat: "thought", cls: source === "jev" ? "jev" : source === "trained" ? "net" : "base", text, detail, bots: [botId], source });
+  }
+
+  private logClock() {
+    const w = this.world;
+    const bots = new Map<string, string>();
+    for (const b of w?.bots ?? []) bots.set(b.id, "#" + b.def.color.toString(16).padStart(6, "0"));
+    return { match: w?.matchNumber ?? 0, t: w?.fightTime ?? 0, bots };
+  }
+
+  /** Point the log's clock at a new match before its first lines arrive. */
+  setWorld(world: World) {
+    this.world = world;
+  }
+
+  private toggleNews() {
+    if (!this.newsEl.classList.contains("hidden")) {
+      this.newsEl.classList.add("hidden");
+      return;
+    }
+    this.newsEl.replaceChildren(renderNews());
+    this.newsEl.classList.remove("hidden");
   }
 
   setJev(info: JevInfo) {
@@ -227,6 +276,7 @@ export class Hud {
   }
 
   update(world: World, brains: Map<string, Brain>) {
+    this.world = world;
     this.matchEl.textContent = `MATCH ${world.matchNumber}`;
     if (world.phase === "countdown") {
       this.phaseEl.textContent = world.countdown > 0.6 ? String(Math.ceil(world.countdown)) : "FIGHT!";
@@ -353,3 +403,45 @@ function statusLine(bot: Bot): string {
   }
 }
 export { ARENA };
+
+/** The newest CHANGELOG.md section as DOM: heading, then bullets with **bold** and `code`. */
+function renderNews(): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "news-card";
+  const sections = changelog.split(/^## /m).slice(1);
+  const latest = sections[0] ?? `${VERSION}\n`;
+  const [heading, ...body] = latest.split("\n");
+  const h = document.createElement("div");
+  h.className = "news-head";
+  h.textContent = `What's new in v${heading.trim()}`;
+  const close = document.createElement("button");
+  close.className = "news-close";
+  close.textContent = "✕";
+  close.onclick = () => card.parentElement?.classList.add("hidden");
+  h.append(close);
+  card.append(h);
+  const ul = document.createElement("ul");
+  // Bullets may wrap onto indented continuation lines; join them first.
+  const items: string[] = [];
+  for (const line of body) {
+    if (/^- /.test(line)) items.push(line.slice(2));
+    else if (/^\s+\S/.test(line) && items.length) items[items.length - 1] += " " + line.trim();
+  }
+  for (const it of items) {
+    const li = document.createElement("li");
+    for (const part of it.split(/(\*\*[^*]+\*\*|`[^`]+`)/)) {
+      if (part.startsWith("**")) li.append(Object.assign(document.createElement("b"), { textContent: part.slice(2, -2) }));
+      else if (part.startsWith("`")) li.append(Object.assign(document.createElement("code"), { textContent: part.slice(1, -1) }));
+      else if (part) li.append(part);
+    }
+    ul.append(li);
+  }
+  card.append(ul);
+  if (sections.length > 1) {
+    const older = document.createElement("div");
+    older.className = "news-older";
+    older.textContent = `Earlier: ${sections.slice(1).map((x) => "v" + x.split(/\s/)[0]).join(", ")} · full history in CHANGELOG.md`;
+    card.append(older);
+  }
+  return card;
+}
