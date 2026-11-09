@@ -17,6 +17,7 @@ export interface HudCallbacks {
   toggleDebug(): void;
   toggleSound(): void;
   toggleDesigner(): void;
+  toggleSeason(): void;
 }
 
 export interface TrainedInfo {
@@ -112,6 +113,8 @@ export class Hud {
   private newsEl: HTMLElement;
   /** Every thought and commentary line of the session, browsable; a tab in the lower right until opened. */
   readonly log: EventLog;
+  /** Replaces "MATCH n" in the top bar (season fixtures name themselves). */
+  matchLabel: string | null = null;
 
   constructor(root: HTMLElement, private cb: HudCallbacks) {
     root.innerHTML = `
@@ -137,6 +140,7 @@ export class Hud {
         <button data-k="sound" title="M">🔊</button>
         <div class="seg"><button data-k="alljev" title="J">All Jev</button><button data-k="alltrained" title="T">All Trained</button><button data-k="allbase" title="B">All Baseline</button></div>
         <button data-k="garage" class="garage" title="G">🛠 Garage</button>
+        <button data-k="season" class="season" title="S">🏆 Season</button>
         <button data-k="new" class="primary" title="N">⟳ New match</button>
       </div>
       <div class="hud-result hidden" id="hud-result"></div>
@@ -172,6 +176,7 @@ export class Hud {
     this.controls.alltrained.onclick = () => cb.setAllBrains("trained");
     this.controls.new.onclick = () => cb.newMatch();
     this.controls.garage.onclick = () => cb.toggleDesigner();
+    this.controls.season.onclick = () => cb.toggleSeason();
   }
 
   private card(bot: Bot): Card {
@@ -292,7 +297,7 @@ export class Hud {
 
   update(world: World, brains: Map<string, Brain>) {
     this.world = world;
-    this.matchEl.textContent = `MATCH ${world.matchNumber}`;
+    this.matchEl.textContent = this.matchLabel ?? `MATCH ${world.matchNumber}`;
     if (world.phase === "countdown") {
       this.phaseEl.textContent = world.countdown > 0.6 ? String(Math.ceil(world.countdown)) : "FIGHT!";
       this.phaseEl.className = "hud-phase count";

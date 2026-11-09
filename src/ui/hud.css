@@ -235,3 +235,4 @@ button.garage:hover { background: rgba(200,176,106,.26); }
 .evlog-jump { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); font-size: 11px; font-weight: 700; padding: 4px 12px; border-radius: 999px; background: rgba(110,231,255,.22); border-color: rgba(110,231,255,.6); box-shadow: 0 4px 14px rgba(0,0,0,.4); }
 /* The full log replaces the ticker while it is open. */
 .log-open .hud-ticker { display: none; }
+.evlog-row.season { border-left-color: #ffd166; color: #fff1cf; font-weight: 600; }

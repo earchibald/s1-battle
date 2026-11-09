@@ -55,7 +55,7 @@ const SRC_LABEL: Record<string, string> = { jev: "JEV", trained: "NET", baseline
 export function catOf(cls: string): LogCat {
   if (cls === "jev" || cls === "net" || cls === "base") return "thought";
   if (cls === "hazard") return "hazard";
-  if (cls === "big") return "match";
+  if (cls === "big" || cls === "season") return "match";
   return "action";
 }
 

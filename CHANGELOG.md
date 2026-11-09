@@ -16,6 +16,11 @@ release and add a section here; the page shows the newest section.
   charges for 1.6 s, then throws anything on it toward the pit, every 9 s. **Shock plates**: two panels flanking the
   pit approach that take turns discharging every 7 s, stunning and breaking grabs. Every trap is telegraphed, the
   brains see them (Jev, baseline conditions), bots route around live ones, and drags and shoves aim victims at them.
+- **Season mode** (`S` or 🏆 Season). Eight bots, four league weeks of two four-bot matches, points for place,
+  eliminations and top damage, then a Last Chance match for 3rd–6th and a four-bot Grand Final: ten matches, about
+  fifteen minutes. Rivalries, revenge, streaks, upsets and cut-line drama are written from the season's own history
+  into fixture hooks and result headlines, ending in a champion screen with awards. It saves after every match;
+  exhibition fights stay the default. `npx tsx scripts/season-sim.ts 1 --check` plays whole seasons headlessly.
 - **Visible versioning.** Version and build commit in the top bar, with this changelog behind it.
 
 ## 0.1.0 — 2026-11-08

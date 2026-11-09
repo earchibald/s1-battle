@@ -128,6 +128,39 @@ The roster and library persist in `localStorage`; **Export / Import** moves the 
 Cost and latency, measured: a match generates ~400–600 Jev decisions (one request each, ~7/s across four
 bots), ~90–100 ms average latency, ~450k input tokens ≈ $0.02 per match at Jev 1.14 pricing.
 
+## Season mode
+
+Press `S` or click **🏆 Season** for a season arc: eight bots, ten matches, one champion. Exhibition (the endless
+auto-advancing free-for-all with the Garage roster) is still what the arena does on load; a season in progress
+shows a **Resume** chip instead of taking over.
+
+- **The league.** Your Garage roster and Library builds enter first (anything you have actually changed from
+  stock), the seven stock bots fill the remaining places, and three house wildcards (HACKSAW, MAELSTROM, BULWARK:
+  stock bodies, retuned) are there to make up eight. The setup screen lets you swap entrants. Builds are frozen
+  when the season starts.
+- **Format.** Four league weeks of two four-bot matches: every bot fights every week, and the schedule
+  guarantees every pair meets at least once. Then the cut: the top two go straight to the **Grand Final**,
+  3rd to 6th fight one **Last Chance** match for the other two places, 7th and 8th are out. The Grand Final is
+  one match, winner takes the title.
+- **Points.** 5 / 3 / 1 / 0 by finishing place (outlasting a bot always places above it), +1 for each bot you
+  eliminate, +1 for the match's top damage dealer. Ties: wins, eliminations, damage.
+- **Storylines.** Eliminations build head-to-head rivalries, so fixtures arrive with a hook: a grudge match, a
+  bot that has been knocked out twice by the same rival and never answered, a win streak to end, first against
+  second, a bot fighting the cut line in the last league week. Results come with headlines (upsets, revenge,
+  streaks snapped), and the table shows form, streaks and who has moved.
+- **Between matches** the season screen shows the table, the last result, the next fixture with its hook, the
+  rivalries and the schedule (click a played match to reread it). **Play next match** runs it in the arena with
+  whatever brains you have selected; **Simulate it** runs it instantly on baseline brains. The season ends on a
+  champion screen with final placings, honours and the season in ten lines.
+- The season saves to `localStorage` after every match. **Exhibition** steps out and keeps it; **Abandon season**
+  deletes it; a Garage **Deploy** is an exhibition match, so it steps out too. In season mode `N` restarts the
+  fixture in progress (or starts the next one).
+
+All of the scheduling, scoring and storyline logic is pure and seeded (`src/season/season.ts`), so
+`npx tsx scripts/season-sim.ts [seed] [garage.json] [--check]` plays a whole season headlessly on baseline brains
+and prints every fixture, hook, result and headline; `--check` also verifies the schedule's guarantees over 30
+seeds and that a season replays identically from its seed.
+
 ## How a decision works
 
 1. `src/sim/perception.ts` builds two views of the moment for a bot: a semantic **Perception** (words and
@@ -166,16 +199,20 @@ src/brain/   decision scheduler (cadence, event nudges, stale-answer guard, fall
 src/render/  Three.js arena (pit, saws, vents, launch pad, shock plates), procedural bot models (armor plates, wheel size and rig scale follow the build)
 src/ui/      HUD cards, ticker/commentary, event log, labels, comic callouts (+ policy), result screen,
              designer.ts (the Garage), library.ts
+src/season/  season.ts (pure: schedule, points, table, rivalries, hooks, headlines, awards), runner.ts (World -> result,
+             headless fixtures), storage.ts, seasonUi.ts + season.css (setup / hub / champion screens, arena hooks)
 src/audio/   procedural Web Audio sound engine (no asset files)
 scripts/     probe-jev.ts (latency check), headless.ts (tournaments; stock kinds or a garage export), balance.ts (win share sweep)
+             season-sim.ts (a whole season, headless)
              train/ (rollout data generation, PyTorch training, parity/fork checks, brain-vs-brain tournaments)
 public/models/trained-brain.json   the shipped trained-brain weights (float16, ~230 KB)
 ```
 
 ## Controls
 
-Space pause · N new match · G garage · L event log · / search the log · Esc close it · C auto/free camera ·
-D debug nav lines · M mute · 1/2/3 speed · J all Jev · T all trained · B all baseline. Click a bot card's brain badge to cycle that bot Jev → Trained → Baseline.
+Space pause · N new match · G garage · S season · L event log · / search the log · Esc close it ·
+C auto/free camera · D debug nav lines · M mute · 1/2/3 speed · J all Jev · T all trained · B all baseline.
+Click a bot card's brain badge to cycle that bot Jev → Trained → Baseline.
 
 ## Tuning and extending
 
