@@ -262,9 +262,77 @@ export interface Speculative {
   prompt: string;
   when: Condition[];
 }
+/**
+ * Personality for the trained brain. The network predicts what each (technique, target) pair would lead to
+ * as six separate outcomes (damage dealt, damage taken, kills, dying, crits, hazard damage); a style is the
+ * weighting of those outcomes plus a few decision habits, so every slider takes effect without retraining.
+ */
+export interface TrainedStyle {
+  /** 0..2: value of damage dealt. */
+  aggression: number;
+  /** 0..2: cost of damage taken. */
+  caution: number;
+  /** 0..2: bonus for eliminating an opponent. */
+  killer: number;
+  /** 0..2: cost of being eliminated. */
+  survival: number;
+  /** 0..2: extra value for critical hits (rear bites, wall flips...). */
+  showboat: number;
+  /** 0..2: extra value for damage through walls, kill saws and the pit. */
+  hazards: number;
+  /** 0..1: 1 always takes the best-valued option; lower samples among near-best ones. */
+  decisiveness: number;
+  /** 0..1: reluctance to abandon the current technique and target. */
+  commitment: number;
+  /** 0..1: preference for whoever hit me last. */
+  grudge: number;
+  /** 0..2: scales the danger estimate the motors react to (high = jumpy, weaving). */
+  nerves: number;
+  /** -1..1 per technique: a thumb on the scale for or against it. */
+  bias: Partial<Record<Maneuver, number>>;
+}
+export const DEFAULT_STYLE: TrainedStyle = {
+  aggression: 1,
+  caution: 1,
+  killer: 1,
+  survival: 1,
+  showboat: 0,
+  hazards: 0,
+  decisiveness: 1,
+  commitment: 0.3,
+  grudge: 0,
+  nerves: 1,
+  bias: {},
+};
+export const STYLE_KEYS = ["aggression", "caution", "killer", "survival", "showboat", "hazards", "decisiveness", "commitment", "grudge", "nerves"] as const;
+export type StyleKey = (typeof STYLE_KEYS)[number];
+export const STYLE_INFO: Record<StyleKey, { label: string; max: number; blurb: string }> = {
+  aggression: { label: "Aggression", max: 2, blurb: "How much damage dealt is worth." },
+  caution: { label: "Caution", max: 2, blurb: "How much damage taken hurts." },
+  killer: { label: "Killer instinct", max: 2, blurb: "Bonus for finishing a bot off or pitting it." },
+  survival: { label: "Self-preservation", max: 2, blurb: "How hard it avoids being destroyed or pitted." },
+  showboat: { label: "Showboating", max: 2, blurb: "Extra value for critical hits: rear bites, wall flips, helpless targets." },
+  hazards: { label: "Hazard play", max: 2, blurb: "Extra value for damage dealt through walls, kill saws and the pit." },
+  decisiveness: { label: "Decisiveness", max: 1, blurb: "1 always takes the best-valued option; lower is more unpredictable." },
+  commitment: { label: "Commitment", max: 1, blurb: "Reluctance to switch technique or target mid-plan." },
+  grudge: { label: "Grudge", max: 1, blurb: "Goes after whoever hit it last." },
+  nerves: { label: "Nerves", max: 2, blurb: "How jumpy the motors are when it senses danger (weaving, flooring it)." },
+};
+export const STYLE_PRESETS: { key: string; label: string; style: Partial<TrainedStyle> }[] = [
+  { key: "balanced", label: "Balanced", style: {} },
+  { key: "berserker", label: "Berserker", style: { aggression: 1.7, caution: 0.35, killer: 1.6, survival: 0.4, commitment: 0.6, nerves: 0.4 } },
+  { key: "turtle", label: "Turtle", style: { aggression: 0.7, caution: 1.8, survival: 2, nerves: 1.4 } },
+  { key: "showboat", label: "Showboat", style: { showboat: 1.6, aggression: 1.1, decisiveness: 0.8 } },
+  { key: "hazard", label: "Hazard hunter", style: { hazards: 1.6, killer: 1.5 } },
+  { key: "grudge", label: "Grudge match", style: { grudge: 0.9, commitment: 0.7, caution: 0.8 } },
+  { key: "wildcard", label: "Wildcard", style: { decisiveness: 0.35, commitment: 0.1 } },
+];
+
 export interface BotLogic {
   targeting: Targeting;
   rules: Rule[];
+  /** Trained-brain personality; normalizeLogic always fills it, stock builds leave it at the default. */
+  trained?: TrainedStyle;
   jev: {
     maneuverPrompt: string;
     targetPrompt: string;
@@ -510,6 +578,7 @@ export function normalizeLogic(raw: unknown, fallback: BotLogic): BotLogic {
         .filter((x) => x.prompt.trim().length > 0)
     : fallback.jev.speculative;
   return {
+    trained: normalizeStyle((r as { trained?: unknown }).trained, fallback.trained),
     targeting: {
       prefer: t.prefer === "weakest" ? "weakest" : "nearest",
       finishBelow: num(t.finishBelow, fallback.targeting.finishBelow, 0, 1),
@@ -524,6 +593,18 @@ export function normalizeLogic(raw: unknown, fallback: BotLogic): BotLogic {
       speculative,
     },
   };
+}
+
+export function normalizeStyle(raw: unknown, fallback: TrainedStyle = DEFAULT_STYLE): TrainedStyle {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Partial<TrainedStyle>;
+  const out = { ...DEFAULT_STYLE, ...fallback, bias: {} } as TrainedStyle;
+  for (const k of STYLE_KEYS) out[k] = num(r[k], out[k], 0, STYLE_INFO[k].max);
+  const bias = (r.bias && typeof r.bias === "object" ? r.bias : fallback.bias ?? {}) as Record<string, unknown>;
+  for (const m of Object.keys(bias)) if (isManeuver(m)) out.bias[m] = num(bias[m], 0, -1, 1);
+  return out;
+}
+export function styleOf(b: BotBuild): TrainedStyle {
+  return b.logic.trained ?? DEFAULT_STYLE;
 }
 
 /** `stockFor(kind)` supplies the fallback for anything missing or malformed. */

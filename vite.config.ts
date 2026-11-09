@@ -7,7 +7,8 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    proxy: { "/api": { target: "http://localhost:8787", changeOrigin: true } },
+    // API_PORT lets a second checkout run beside the main one.
+    proxy: { "/api": { target: `http://localhost:${process.env.API_PORT ?? 8787}`, changeOrigin: true } },
   },
   build: { outDir: "dist", sourcemap: true },
 });

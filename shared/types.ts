@@ -132,7 +132,7 @@ export interface Intent {
   maneuver: Maneuver;
   /** Probability (0..1) the bot believes it is about to be hit. Controllers use it to drive more evasively. */
   danger: number;
-  source: "jev" | "baseline" | "fallback";
+  source: "jev" | "baseline" | "fallback" | "trained";
   /** For the HUD: how sure the brain was about the maneuver, and the full distribution. */
   confidence: number;
   probabilities: Record<string, number>;

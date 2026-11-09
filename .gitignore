@@ -4,3 +4,5 @@ dist
 .DS_Store
 *.log
 .claude/worktrees/
+data/
+__pycache__/

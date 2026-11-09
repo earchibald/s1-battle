@@ -22,4 +22,4 @@ export type SimEvent =
   | { type: "saws_up" }
   | { type: "match_start" }
   | { type: "match_end"; winner: string | null; reason: "last_standing" | "judges" | "draw" }
-  | { type: "decision"; bot: string; note: string; source: "jev" | "baseline" | "fallback" };
+  | { type: "decision"; bot: string; note: string; source: "jev" | "baseline" | "fallback" | "trained" };

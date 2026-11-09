@@ -39,6 +39,7 @@ export interface BotStatsSheet {
   hits: number;
   decisions: number;
   jevDecisions: number;
+  trainedDecisions: number;
 }
 
 export type Elimination = null | "destroyed" | "pitted";
@@ -105,7 +106,7 @@ export class Bot {
   /** Where the controller is currently steering toward, for debug rendering. */
   navTarget: Vec | null = null;
 
-  stats: BotStatsSheet = { damageDealt: 0, damageTaken: 0, hits: 0, decisions: 0, jevDecisions: 0 };
+  stats: BotStatsSheet = { damageDealt: 0, damageTaken: 0, hits: 0, decisions: 0, jevDecisions: 0, trainedDecisions: 0 };
 
   constructor(def: BotDef, start: Vec, heading: number) {
     this.def = def;
@@ -125,6 +126,22 @@ export class Bot {
       latencyMs: 0,
       note: "waiting for the bell",
     };
+  }
+
+  /**
+   * Copy for a forked world. References to other bots (heldBy/holding) still point into the old world;
+   * World.clone remaps them once every bot has its copy.
+   */
+  cloneForFork(): Bot {
+    const c = Object.assign(Object.create(Bot.prototype) as Bot, this);
+    c.p = { ...this.p };
+    c.vel = { ...this.vel };
+    c.knock = { ...this.knock };
+    c.weapon = { ...this.weapon, hitCooldowns: new Map(this.weapon.hitCooldowns) };
+    c.intent = { ...this.intent };
+    c.stats = { ...this.stats };
+    c.navTarget = this.navTarget ? { ...this.navTarget } : null;
+    return c;
   }
 
   get radius(): number {

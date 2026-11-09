@@ -48,6 +48,31 @@ export class World {
     });
   }
 
+  /**
+   * An independent copy of the whole match state, for counterfactual rollouts ("what if this bot flanked
+   * instead?"). The RNG stream is copied too, so a fork stepped with the same controls replays identically,
+   * and sibling forks share their random numbers (common random numbers keep comparisons low-noise).
+   * Defs are shared: they are read-only during a match.
+   */
+  clone(): World {
+    // Writable view of the readonly/private fields that need fresh copies.
+    const w = Object.assign(Object.create(World.prototype) as World, this) as unknown as { bots: Bot[]; rng: Rng; events: SimEvent[]; result: MatchResult | null };
+    const map = new Map<Bot, Bot>();
+    w.bots = this.bots.map((b) => {
+      const c = b.cloneForFork();
+      map.set(b, c);
+      return c;
+    });
+    for (const c of w.bots) {
+      c.heldBy = c.heldBy ? map.get(c.heldBy)! : null;
+      c.holding = c.holding ? map.get(c.holding)! : null;
+    }
+    w.rng = makeRng(this.rng.state());
+    w.events = [];
+    w.result = this.result ? { ...this.result, standings: this.result.standings.map((s) => ({ ...s })) } : null;
+    return w as unknown as World;
+  }
+
   get timeLeft(): number {
     return Math.max(0, ARENA.matchSeconds - this.fightTime);
   }

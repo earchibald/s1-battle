@@ -1,9 +1,10 @@
 import type { BotDef } from "@shared/bots/common";
-import { World } from "./world";
-import { sense } from "./perception";
+import type { Bot } from "./bot";
+import { Driver, baselinePolicy, type Policy } from "./driver";
+import type { World } from "./world";
 
 /**
- * Runs matches with baseline brains only, no renderer, no Jev. Deterministic for a seed. Shared by the
+ * Runs matches with synchronous brains (baseline by default), no renderer, no Jev. Deterministic for a seed. Shared by the
  * headless tuning script and by the designer's "simulate" button, so it is DOM-free and chunkable.
  */
 
@@ -24,35 +25,21 @@ export interface QuickSimOptions {
   seed?: number;
   /** Seconds between baseline decisions. */
   cadence?: number;
+  /** Brain per bot; default: every bot on its baseline rule tree. */
+  policyFor?: (bot: Bot) => Policy;
   /** Called after each match so a UI can show progress and yield to the event loop. */
   onMatch?(index: number, result: QuickSimResult, world: World): void | Promise<void>;
 }
 
-export function runMatch(lineup: BotDef[], seed: number, cadence?: number, onDecision?: (bot: string, ruleId: string) => void): World {
-  const DT = 1 / 60;
-  const w = new World(lineup, seed);
-  // Each bot thinks at its own cadence (sensors); `cadence` overrides for tuning scripts.
-  const cadenceOf = (b: { def: BotDef }) => cadence ?? b.def.stats.cadence;
-  // Stagger the first decisions deterministically from the seed.
-  const timers = new Map(w.bots.map((b, i) => [b.id, (((seed * 7 + i * 13) % 10) / 10) * cadenceOf(b)]));
-  let steps = 0;
-  while (w.phase !== "ended" && steps < 60 * 400) {
-    w.step(DT);
-    steps++;
-    if (w.phase !== "fighting") continue;
-    for (const b of w.bots) {
-      if (!b.alive) continue;
-      const t = timers.get(b.id)! - DT;
-      if (t <= 0) {
-        timers.set(b.id, cadenceOf(b));
-        b.intent = b.def.baseline(sense(b, w.bots, w.fightTime, w.timeLeft));
-        b.stats.decisions++;
-        onDecision?.(b.id, b.intent.ruleId ?? "default");
-      } else timers.set(b.id, t);
-    }
-    w.drainEvents();
-  }
-  return w;
+export function runMatch(
+  lineup: BotDef[],
+  seed: number,
+  cadence?: number,
+  onDecision?: (bot: string, ruleId: string) => void,
+  policyFor: (bot: Bot) => Policy = () => baselinePolicy,
+): World {
+  const d = Driver.start(lineup, seed, policyFor, { cadence, onDecision: (b, intent) => onDecision?.(b.id, intent.ruleId ?? "default") });
+  return d.run();
 }
 
 export async function quickSim(defs: BotDef[], opts: QuickSimOptions): Promise<QuickSimResult> {
@@ -65,10 +52,16 @@ export async function quickSim(defs: BotDef[], opts: QuickSimOptions): Promise<Q
   for (let m = 0; m < opts.matches; m++) {
     // Rotate start slots so no bot always gets the same corner.
     const lineup = defs.map((_, i) => defs[(i + m) % defs.length]);
-    const w = runMatch(lineup, seed0 + m, opts.cadence, (bot, rule) => {
-      const r = res.rules[bot];
-      if (r) r[rule] = (r[rule] ?? 0) + 1;
-    });
+    const w = runMatch(
+      lineup,
+      seed0 + m,
+      opts.cadence,
+      (bot, rule) => {
+        const r = res.rules[bot];
+        if (r) r[rule] = (r[rule] ?? 0) + 1;
+      },
+      opts.policyFor,
+    );
     const r = w.result!;
     res.matches++;
     res.wins[r.winner ?? "draw"] = (res.wins[r.winner ?? "draw"] ?? 0) + 1;

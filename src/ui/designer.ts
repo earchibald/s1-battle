@@ -28,9 +28,13 @@ import { STOCK_PROMPTS } from "@shared/bots/prompts";
 import { Library } from "./library";
 import type { QuickSimResult } from "../sim/quicksim";
 import { buildQuestions, defFromBuild, evalCondition, makeContext } from "@shared/logic";
+import { DEFAULT_STYLE, STYLE_INFO, STYLE_KEYS, STYLE_PRESETS, type StyleKey, type TrainedStyle } from "@shared/build";
+import { Brain } from "../brain/brains";
+import { decideTrained, trainedPolicy } from "../brain/trained/policy";
+import { MANEUVERS } from "../sim/features";
+import { COMPONENTS, N_COMPONENTS } from "../sim/rollout";
 import type { BotKind, Maneuver } from "@shared/types";
 import { BOT_KINDS } from "@shared/types";
-import type { Brain } from "../brain/brains";
 import { BotMesh } from "../render/botMesh";
 import { Bot } from "../sim/bot";
 import { sense } from "../sim/perception";
@@ -59,7 +63,7 @@ export interface DesignerCallbacks {
   toast(text: string): void;
 }
 
-type Tab = "build" | "baseline" | "jev" | "library";
+type Tab = "build" | "baseline" | "jev" | "trained" | "library";
 
 /** One number in the brain that the tuner can sweep. */
 interface Tunable {
@@ -91,6 +95,14 @@ interface AbState {
   done: number;
   running: boolean;
 }
+interface StyleAbState {
+  slot: number;
+  n: number;
+  styled: { wins: number; damage: number };
+  balanced: { wins: number; damage: number };
+  done: number;
+  running: boolean;
+}
 const TUNE_STEPS = 7;
 
 const SWATCHES = [0xe6a92b, 0xd13b3b, 0x2dd4bf, 0xff7a1a, 0x6ee7ff, 0xb57bff, 0x7cff6e, 0xff5fa2, 0xf4f4f4, 0x8b93a7];
@@ -115,6 +127,7 @@ export class Designer {
   private lastSim: { result: QuickSimResult; names: string[] } | null = null;
   private tune: TuneState | null = null;
   private ab: AbState | null = null;
+  private styleAb: StyleAbState | null = null;
   readonly library = new Library();
 
   // 3D preview
@@ -154,6 +167,7 @@ export class Designer {
               <button data-tab="build">BUILD</button>
               <button data-tab="baseline">BASELINE BRAIN</button>
               <button data-tab="jev">JEV BRAIN</button>
+              <button data-tab="trained">TRAINED BRAIN</button>
               <button data-tab="library">LIBRARY</button>
             </nav>
             <div class="dz-editor-body" id="dz-editor"></div>
@@ -365,6 +379,9 @@ export class Designer {
         break;
       case "jev":
         this.editorEl.innerHTML = this.htmlJev();
+        break;
+      case "trained":
+        this.editorEl.innerHTML = this.htmlTrained();
         break;
       case "library":
         this.editorEl.innerHTML = this.htmlLibrary();
@@ -856,7 +873,195 @@ export class Designer {
     el.querySelectorAll<HTMLButtonElement>("[data-tune]").forEach((btn) => (btn.onclick = () => void this.startTune(btn.dataset.tune!)));
     if (this.tab === "baseline") this.bindBaseline();
     if (this.tab === "jev") this.bindJev();
+    if (this.tab === "trained") this.bindTrained();
     if (this.tab === "library") this.bindLibrary();
+  }
+
+  /* ---------------------------------------------------------------- TRAINED tab ------------------ */
+
+  private get style(): TrainedStyle {
+    return (this.b.logic.trained ??= { ...DEFAULT_STYLE, bias: {} });
+  }
+
+  private htmlTrained(): string {
+    const b = this.b;
+    const st = this.style;
+    const net = Brain.trainedNet;
+    const info = (net?.file.info ?? {}) as { rows?: number; params?: number; datasets?: string[]; trained_at?: string; val?: Record<string, number> };
+    const val = info.val ?? {};
+    const presetOn = (p: (typeof STYLE_PRESETS)[number]) => {
+      const full = { ...DEFAULT_STYLE, ...p.style } as TrainedStyle;
+      return STYLE_KEYS.every((k) => Math.abs(st[k] - full[k]) < 1e-6);
+    };
+    const sliders = STYLE_KEYS.map((k) => {
+      const I = STYLE_INFO[k];
+      return `<label class="dz-style" title="${esc(I.blurb)}"><span>${I.label}</span>
+        <input type="range" min="0" max="${I.max}" step="0.05" value="${st[k]}" data-style="${k}" />
+        <output id="dz-style-${k}">${st[k].toFixed(2)}</output><small>${esc(I.blurb)}</small></label>`;
+    }).join("");
+    const biases = b.techniques
+      .map((m) => {
+        const v = st.bias[m] ?? 0;
+        return `<label class="dz-style"><span>${maneuverLabel(m)}</span>
+          <input type="range" min="-1" max="1" step="0.05" value="${v}" data-bias="${m}" />
+          <output id="dz-bias-${m}">${v > 0 ? "+" : ""}${v.toFixed(2)}</output></label>`;
+      })
+      .join("");
+    const metrics = net
+      ? `<span>weights</span><b>${((info.params ?? 0) / 1000).toFixed(0)}k</b>` +
+        `<span>training moments</span><b>${((info.rows ?? 0) / 1000).toFixed(0)}k</b>` +
+        `<span>datasets</span><b>${esc((info.datasets ?? []).join(" + "))}</b>` +
+        `<span>trained</span><b>${esc(info.trained_at ?? "")}</b>` +
+        (val.danger_auc !== undefined ? `<span>danger AUC (held out)</span><b>${val.danger_auc.toFixed(3)}</b>` : "") +
+        (val.regret_hp !== undefined ? `<span>regret vs best option</span><b>${val.regret_hp.toFixed(1)} hp (random pick ${(val.random_regret_hp ?? 0).toFixed(1)})</b>` : "")
+      : `<span>status</span><b>not loaded: bots on the trained brain fall back to baseline</b>`;
+    return `
+      <section class="dz-sec">
+        <header class="dz-sec-head-row"><div><h2>Personality</h2><p>One small network drives every trained bot. For each technique × opponent it predicts what would happen over the next ~2.5 s: damage dealt, damage taken, kills, dying, crits and hazard damage. The style decides what each of those is worth, so changes apply instantly with no retraining.</p></div>
+          <div class="dz-sec-actions"><button data-a="style-ab" class="dz-ghost" title="16 quick matches with this style, then the same 16 with Balanced">⚖ Test style</button></div>
+        </header>
+        <div class="dz-chips">${STYLE_PRESETS.map((p) => `<button class="dz-chip ${presetOn(p) ? "on" : ""}" data-preset="${p.key}"><b>${p.label}</b></button>`).join("")}</div>
+        <div class="dz-styles">${sliders}</div>
+      </section>
+      <section class="dz-sec">
+        <header><h2>Technique bias</h2><p>A thumb on the scale for or against each installed technique (up to ±10 hp of value). The technique gates in the JEV BRAIN tab still decide what is on offer.</p></header>
+        <div class="dz-styles">${biases}</div>
+      </section>
+      <section class="dz-sec">
+        <header><h2>Live: what the network is weighing</h2><p>Every option on offer for this bot right now, valued with this style (hp-equivalents over the next few seconds). Shown even when the bot is on another brain.</p></header>
+        <div class="dz-net-live" id="dz-net-live">— no match running —</div>
+      </section>
+      <section class="dz-sec">
+        <header><h2>Model</h2><p>Trained offline from counterfactual rollouts: the sim forks sampled decisions once per option and plays each one out. docs/trained-brain.md explains how to retrain.</p></header>
+        <div class="dz-net-info">${metrics}</div>
+      </section>`;
+  }
+
+  private bindTrained() {
+    const el = this.editorEl;
+    const st = this.style;
+    const live = () => {
+      this.cb.onChange(this.builds);
+      this.cb.applyLive(this.slot, this.b);
+    };
+    el.querySelectorAll<HTMLInputElement>("[data-style]").forEach((inp) => {
+      const k = inp.dataset.style as StyleKey;
+      inp.oninput = () => {
+        st[k] = Number(inp.value);
+        const out = el.querySelector(`#dz-style-${k}`);
+        if (out) out.textContent = st[k].toFixed(2);
+        el.querySelectorAll(".dz-chip[data-preset]").forEach((c) => c.classList.remove("on"));
+        live();
+      };
+    });
+    el.querySelectorAll<HTMLInputElement>("[data-bias]").forEach((inp) => {
+      const m = inp.dataset.bias as Maneuver;
+      inp.oninput = () => {
+        const v = Number(inp.value);
+        if (Math.abs(v) < 0.001) delete st.bias[m];
+        else st.bias[m] = v;
+        const out = el.querySelector(`#dz-bias-${m}`);
+        if (out) out.textContent = `${v > 0 ? "+" : ""}${v.toFixed(2)}`;
+        live();
+      };
+    });
+    el.querySelectorAll<HTMLButtonElement>("[data-preset]").forEach((btn) => {
+      btn.onclick = () => {
+        const p = STYLE_PRESETS.find((x) => x.key === btn.dataset.preset)!;
+        this.b.logic.trained = { ...DEFAULT_STYLE, ...p.style, bias: { ...st.bias } };
+        this.changed(false);
+        this.cb.toast(`${this.b.name}: ${p.label} personality`);
+      };
+    });
+    el.querySelector<HTMLButtonElement>('[data-a="style-ab"]')!.onclick = () => void this.styleAbTest();
+  }
+
+  /** Same roster and seeds, everyone on the trained brain: this slot with its style, then with Balanced. */
+  private async styleAbTest() {
+    const net = Brain.trainedNet;
+    if (!net) {
+      this.cb.toast("Trained brain not loaded");
+      return;
+    }
+    if (this.styleAb?.running) return;
+    const N = 16;
+    const slot = this.slot;
+    this.styleAb = { slot, n: N, styled: { wins: 0, damage: 0 }, balanced: { wins: 0, damage: 0 }, done: 0, running: true };
+    const paint = () => {
+      const el = this.specEl.querySelector("#dz-ab");
+      if (!el) return;
+      el.innerHTML = this.htmlStyleAb();
+      const x = el.querySelector<HTMLButtonElement>('[data-a="sab-close"]');
+      if (x)
+        x.onclick = () => {
+          this.styleAb = null;
+          el.innerHTML = "";
+        };
+    };
+    paint();
+    const seed = 3000 + Math.floor(Math.random() * 1000);
+    const run = async (style: TrainedStyle, into: "styled" | "balanced", offset: number) => {
+      const builds = this.builds.map(cloneBuild);
+      builds[slot].logic.trained = style;
+      const { defs, names } = this.simDefs(builds);
+      const me = names[slot];
+      await quickSim(defs, {
+        matches: N,
+        seed,
+        policyFor: () => trainedPolicy(net, { seed }),
+        onMatch: (i, r) => {
+          if (!this.styleAb) return;
+          this.styleAb[into] = { wins: r.wins[me] ?? 0, damage: Math.round(r.perBot[me].damage / (i + 1)) };
+          this.styleAb.done = offset + i + 1;
+          paint();
+          return new Promise((res) => setTimeout(res, 0));
+        },
+      });
+    };
+    try {
+      await run(cloneBuild(this.b).logic.trained ?? DEFAULT_STYLE, "styled", 0);
+      await run({ ...DEFAULT_STYLE, bias: {} }, "balanced", N);
+    } finally {
+      if (this.styleAb) {
+        this.styleAb.running = false;
+        paint();
+      }
+    }
+  }
+
+  private htmlStyleAb(): string {
+    const A = this.styleAb;
+    if (!A) return "";
+    const name = this.builds[A.slot].name;
+    const row = (label: string, r: { wins: number; damage: number }, cls: string) =>
+      `<div class="dz-sim-row"><span class="${cls}">${label}</span><i><b style="width:${(r.wins / A.n) * 100}%"></b></i><em>${r.wins}</em><small>/ ${A.n} · ${r.damage} dmg</small></div>`;
+    const verdict = A.running ? `running… ${A.done}/${A.n * 2}` : A.styled.wins > A.balanced.wins ? "this style wins more" : A.styled.wins < A.balanced.wins ? "Balanced wins more" : "dead heat";
+    return `<div class="dz-sim-head"><b>STYLE TEST</b><span>${esc(name)}: this personality vs Balanced, all four bots on the trained brain</span><small>${verdict}</small></div>
+      ${row("this style", A.styled, "ab-edited")}${row("balanced", A.balanced, "ab-stock")}
+      <div class="dz-tune-foot"><span>same roster, same seeds; only this bot's personality differs.</span><button data-a="sab-close" class="dz-x" title="Dismiss">×</button></div>`;
+  }
+
+  /** The network's value table for the selected bot, refreshed by tick() while a match runs. */
+  private renderTrainedLive(bot: Bot, world: World) {
+    const box = this.editorEl.querySelector("#dz-net-live");
+    const net = Brain.trainedNet;
+    if (!box || !net) return;
+    const d = decideTrained(net, bot, world, this.style, null);
+    const onNet = this.cb.brainForSlot(this.slot)?.effectiveMode === "trained";
+    const slots = world.bots.filter((o) => o !== bot && o.alive).map((o) => o.id);
+    const rows = d.scored
+      .slice(0, 8)
+      .map((s, i) => {
+        const base = (slots.indexOf(s.target) * MANEUVERS.length + MANEUVERS.indexOf(s.maneuver)) * N_COMPONENTS;
+        const q = COMPONENTS.map((_, c) => d.out.q[base + c]);
+        const hp = (x: number) => (x * 100).toFixed(0);
+        const pct = (x: number) => `${Math.round(Math.max(0, Math.min(1, x)) * 100)}%`;
+        return `<tr class="${i === 0 ? "best" : ""}"><td>${maneuverLabel(s.maneuver)}</td><td>${esc(s.target)}</td><td class="v">${(s.value * 100).toFixed(1)}</td>
+          <td>${hp(q[0])}</td><td>${hp(q[1])}</td><td>${pct(q[2])}</td><td>${pct(q[3])}</td><td>${hp(q[4])}</td><td>${hp(q[5])}</td></tr>`;
+      })
+      .join("");
+    box.innerHTML = `<div class="dz-net-meta"><b>${esc(bot.id)}</b> · ${onNet ? "driving with this brain" : "on another brain right now; showing what the network would weigh"} · danger ${(d.out.danger * 100).toFixed(0)}% · ${d.micros.toFixed(0)} µs</div>
+      <table class="dz-net-table"><thead><tr><th>technique</th><th>target</th><th>value</th><th title="damage dealt">dealt</th><th title="damage taken">taken</th><th title="chance of a kill">kill</th><th title="chance of being eliminated">die</th><th title="crit damage">crit</th><th title="damage via walls, saws, pit">hazard</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   /* ---------------------------------------------------------------- LIBRARY tab ------------------ */
@@ -1404,6 +1609,8 @@ export class Designer {
       this.editorEl.querySelectorAll(".dz-rule, .dz-tech").forEach((el) => el.classList.remove("firing", "match", "offered"));
       const pre = this.editorEl.querySelector("#dz-live-json");
       if (pre) pre.textContent = "— no match running —";
+      const netLive = this.editorEl.querySelector("#dz-net-live");
+      if (netLive) netLive.textContent = "— no match running —";
       return;
     }
     const s = sense(bot, world.bots, world.fightTime, world.timeLeft);
@@ -1435,6 +1642,7 @@ export class Designer {
         el.classList.toggle("firing", id === firing);
       });
     }
+    if (this.tab === "trained") this.renderTrainedLive(bot, world);
     if (this.tab === "jev") {
       this.editorEl.querySelectorAll<HTMLElement>(".dz-tech[data-gate]").forEach((el) => {
         const gate = this.b.logic.jev.techniques[el.dataset.gate as Maneuver]?.when ?? [];

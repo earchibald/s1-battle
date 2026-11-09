@@ -1,19 +1,26 @@
 import type { BotSense } from "@shared/bots/common";
+import { styleOf } from "@shared/build";
 import { interpretAnswers } from "@shared/logic";
 import type { DecideError, DecideResponse, Intent } from "@shared/types";
 import type { Bot } from "../sim/bot";
+import { isUrgent } from "../sim/driver";
 import type { SimEvent } from "../sim/events";
+import { makeRng } from "../sim/math";
 import { sense } from "../sim/perception";
 import type { World } from "../sim/world";
+import type { TrainedNet } from "./trained/net";
+import { decideTrained, type TrainedDecision } from "./trained/policy";
 
 /**
  * Brains decide; controllers drive. A brain is polled every `cadence` seconds (and nudged early by
  * notable events) and hands the bot a fresh Intent. The Jev brain is asynchronous: it sends the
  * bot's Perception to the server, which asks Jev, and applies the answer when it comes back,
- * unless the world has moved on so far that the answer is stale.
+ * unless the world has moved on so far that the answer is stale. The trained brain is a small local network
+ * (src/brain/trained) that answers synchronously in well under a millisecond.
  */
 
-export type BrainMode = "jev" | "baseline";
+export type BrainMode = "jev" | "trained" | "baseline";
+export const BRAIN_MODES: BrainMode[] = ["jev", "trained", "baseline"];
 
 export interface BrainStatus {
   mode: BrainMode;
@@ -42,6 +49,11 @@ export class Brain {
   readonly opts: BrainOptions;
   /** Set by the UI when the server reports Jev is unavailable, so every brain falls back silently. */
   static jevAvailable = true;
+  /** The trained brain's network, once /models/trained-brain.json has loaded. */
+  static trainedNet: TrainedNet | null = null;
+  /** The trained brain's last full decision (every scored option), for the Garage readout. */
+  lastTrained: TrainedDecision | null = null;
+  private rng = makeRng((Math.random() * 2 ** 31) | 0);
 
   constructor(bot: Bot, mode: BrainMode, opts: BrainOptions) {
     this.bot = bot;
@@ -59,15 +71,14 @@ export class Brain {
 
   /** Events that should make a bot rethink right away rather than wait for the next tick. */
   nudge(e: SimEvent) {
-    const id = this.bot.id;
-    const urgent =
-      (e.type === "hit" && e.victim === id && e.amount > 6) ||
-      (e.type === "grab" && (e.bot === id || e.victim === id)) ||
-      (e.type === "release" && (e.bot === id || e.victim === id)) ||
-      (e.type === "flip" && e.victim === id) ||
-      ((e.type === "destroyed" || e.type === "pitted") && this.bot.intent.target === e.bot) ||
-      e.type === "pit_open";
-    if (urgent) this.timer = Math.min(this.timer, 0.08);
+    if (isUrgent(e, this.bot)) this.timer = Math.min(this.timer, 0.08);
+  }
+
+  /** What actually drives the bot right now: Jev falls back to the trained brain (or baseline) when offline. */
+  get effectiveMode(): BrainMode {
+    if (this.mode === "jev" && !Brain.jevAvailable) return Brain.trainedNet ? "trained" : "baseline";
+    if (this.mode === "trained" && !Brain.trainedNet) return "baseline";
+    return this.mode;
   }
 
   update(world: World, dt: number, emit: (e: SimEvent) => void) {
@@ -75,8 +86,16 @@ export class Brain {
     this.timer -= dt;
     if (this.timer > 0) return;
     this.timer = this.cadence;
+    const mode = this.effectiveMode;
+    if (mode === "trained") {
+      const d = decideTrained(Brain.trainedNet!, this.bot, world, styleOf(this.bot.def.build), this.rng);
+      this.lastTrained = d;
+      this.status.lastLatencyMs = d.micros / 1000;
+      this.apply(d.intent, emit);
+      return;
+    }
     const s = sense(this.bot, world.bots, world.fightTime, world.timeLeft);
-    if (this.mode === "baseline" || !Brain.jevAvailable) {
+    if (mode === "baseline") {
       this.apply(this.bot.def.baseline(s), emit);
       return;
     }
@@ -89,6 +108,7 @@ export class Brain {
     this.bot.intent = intent;
     this.bot.stats.decisions++;
     if (intent.source === "jev") this.bot.stats.jevDecisions++;
+    if (intent.source === "trained") this.bot.stats.trainedDecisions++;
     this.status.decisions++;
     if (changed) emit({ type: "decision", bot: this.bot.id, note: intent.note, source: intent.source });
   }

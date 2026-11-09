@@ -26,7 +26,7 @@ export class Labels {
     this.tags.set(bot.id, { root, name, bubble, until: 0 });
   }
 
-  say(botId: string, text: string, source: "jev" | "baseline" | "fallback", now: number) {
+  say(botId: string, text: string, source: "jev" | "baseline" | "fallback" | "trained", now: number) {
     const t = this.tags.get(botId);
     if (!t) return;
     t.bubble.textContent = text;

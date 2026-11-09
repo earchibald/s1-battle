@@ -7,6 +7,7 @@
   --jev: #6ee7ff;
   --base: #c8b06a;
   --fallback: #ff9f6e;
+  --net: #c9a2ff;
   --danger: #ff4d5e;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --sans: "Inter", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
@@ -52,6 +53,7 @@ button.garage:hover { background: rgba(200,176,106,.26); }
 .brain-toggle { font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .1em; padding: 4px 8px; border-radius: 6px; }
 .brain-toggle.jev { color: var(--jev); border-color: rgba(110,231,255,.5); background: rgba(110,231,255,.1); }
 .brain-toggle.baseline { color: var(--base); border-color: rgba(200,176,106,.5); background: rgba(200,176,106,.1); }
+.brain-toggle.trained { color: var(--net); border-color: rgba(201,162,255,.5); background: rgba(201,162,255,.1); }
 .brain-toggle.busy { box-shadow: 0 0 10px rgba(110,231,255,.6); }
 .bar { position: relative; height: 10px; background: rgba(255,255,255,0.08); border-radius: 6px; overflow: hidden; }
 .bar.charge { height: 4px; }
@@ -66,6 +68,7 @@ button.garage:hover { background: rgba(200,176,106,.26); }
 .maneuver[data-source="jev"] { color: var(--jev); }
 .maneuver[data-source="baseline"] { color: var(--base); }
 .maneuver[data-source="fallback"] { color: var(--fallback); }
+.maneuver[data-source="trained"] { color: var(--net); }
 .target { font-size: 12px; color: var(--muted); }
 .probs { display: flex; flex-direction: column; gap: 2px; }
 .prob { display: grid; grid-template-columns: 78px 1fr 26px; align-items: center; gap: 6px; font-family: var(--mono); font-size: 9px; color: var(--muted); }
@@ -78,6 +81,10 @@ button.garage:hover { background: rgba(200,176,106,.26); }
 .hud-jev { position: absolute; right: 14px; top: 14px; width: 220px; background: var(--panel); border: 1px solid var(--panel-border); border-radius: 12px; padding: 10px 12px; backdrop-filter: blur(10px); font-family: var(--mono); }
 .jev-title { font-size: 12px; font-weight: 700; letter-spacing: .14em; color: var(--jev); display: flex; align-items: center; gap: 8px; }
 .jev-title.off { color: var(--fallback); }
+.jev-title.net { color: var(--net); }
+.jev-title.net .dot { background: var(--net); box-shadow: 0 0 10px var(--net); }
+.hud-side { position: absolute; right: 14px; top: 14px; width: 220px; display: flex; flex-direction: column; gap: 8px; }
+.hud-side .hud-jev { position: static; width: auto; }
 .jev-title .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--jev); box-shadow: 0 0 10px var(--jev); animation: pulse 1.6s infinite; }
 .jev-title .model { margin-left: auto; font-size: 10px; color: var(--muted); font-weight: 500; letter-spacing: 0; }
 .jev-sub { font-size: 11px; color: var(--muted); margin-top: 6px; font-family: var(--sans); }
@@ -92,6 +99,7 @@ button.garage:hover { background: rgba(200,176,106,.26); }
 .line.big { font-weight: 800; border-left: 3px solid #fff; font-size: 14px; }
 .line.hazard { border-left: 3px solid var(--danger); color: #ffb3b9; }
 .line.jev { border-left: 3px solid var(--jev); color: #bfefff; font-family: var(--mono); font-size: 11px; }
+.line.net { border-left: 3px solid var(--net); color: #e6d6ff; font-family: var(--mono); font-size: 11px; }
 .line.base { border-left: 3px solid var(--base); color: #e6d9b0; font-family: var(--mono); font-size: 11px; }
 @keyframes slidein { from { transform: translateX(20px); opacity: 0; } }
 
@@ -111,6 +119,7 @@ button.garage:hover { background: rgba(200,176,106,.26); }
 .bubble[data-source="jev"] { color: var(--jev); border-color: rgba(110,231,255,.5); }
 .bubble[data-source="baseline"] { color: var(--base); border-color: rgba(200,176,106,.5); }
 .bubble[data-source="fallback"] { color: var(--fallback); }
+.bubble[data-source="trained"] { color: var(--net); border-color: rgba(201,162,255,.5); }
 .floater { position: absolute; left: 0; top: 0; font-family: var(--mono); font-weight: 700; font-size: 18px; color: #fff; text-shadow: 0 0 10px rgba(0,0,0,.9), 0 2px 2px #000; will-change: transform, opacity; }
 .floater.big { font-size: 26px; color: #ffd166; }
 .floater.saw { color: #ffe08a; }
@@ -133,7 +142,7 @@ button.garage:hover { background: rgba(200,176,106,.26); }
 @media (max-width: 1100px) {
   .hud-cards { width: 220px; }
   .hud-ticker { width: 260px; }
-  .hud-jev { display: none; }
+  .hud-jev, .hud-side { display: none; }
 }
 
 /* comic callouts */

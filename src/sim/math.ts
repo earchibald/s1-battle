@@ -49,6 +49,8 @@ export function makeRng(seed: number) {
   };
   return {
     next,
+    /** Internal state; `makeRng(rng.state())` continues the exact same stream (used by World.clone). */
+    state: () => s,
     range: (lo: number, hi: number) => lo + (hi - lo) * next(),
     pick: <T>(arr: T[]): T => arr[Math.floor(next() * arr.length)],
   };

@@ -16,6 +16,12 @@ export interface HudCallbacks {
   toggleDesigner(): void;
 }
 
+export interface TrainedInfo {
+  loaded: boolean;
+  /** Why it is not loaded, or a one-line description of the model. */
+  detail: string;
+}
+
 export interface JevInfo {
   configured: boolean;
   model: string;
@@ -80,6 +86,7 @@ export class Hud {
   private matchEl: HTMLElement;
   private hazardsEl: HTMLElement;
   private jevEl: HTMLElement;
+  private netEl: HTMLElement;
   private resultEl: HTMLElement;
   private controls: Record<string, HTMLButtonElement> = {};
   private jevInfo: JevInfo = { configured: false, model: "" };
@@ -92,7 +99,10 @@ export class Hud {
         <div class="hud-hazards" id="hud-hazards"></div>
       </div>
       <div class="hud-cards" id="hud-cards"></div>
-      <div class="hud-jev" id="hud-jev"></div>
+      <div class="hud-side">
+        <div class="hud-jev" id="hud-jev"></div>
+        <div class="hud-jev hud-net" id="hud-net"></div>
+      </div>
       <div class="hud-ticker" id="hud-ticker"></div>
       <div class="hud-controls" id="hud-controls">
         <button data-k="pause" title="Space">⏸ Pause</button>
@@ -100,7 +110,7 @@ export class Hud {
         <button data-k="cam" title="C">🎥 Auto cam</button>
         <button data-k="debug" title="D">◎ Debug</button>
         <button data-k="sound" title="M">🔊</button>
-        <div class="seg"><button data-k="alljev">All Jev</button><button data-k="allbase">All Baseline</button></div>
+        <div class="seg"><button data-k="alljev" title="J">All Jev</button><button data-k="alltrained" title="T">All Trained</button><button data-k="allbase" title="B">All Baseline</button></div>
         <button data-k="garage" class="garage" title="G">🛠 Garage</button>
         <button data-k="new" class="primary" title="N">⟳ New match</button>
       </div>
@@ -113,6 +123,7 @@ export class Hud {
     this.matchEl = root.querySelector("#hud-match")!;
     this.hazardsEl = root.querySelector("#hud-hazards")!;
     this.jevEl = root.querySelector("#hud-jev")!;
+    this.netEl = root.querySelector("#hud-net")!;
     this.resultEl = root.querySelector("#hud-result")!;
     root.querySelectorAll<HTMLButtonElement>("#hud-controls button").forEach((b) => {
       this.controls[b.dataset.k!] = b;
@@ -126,6 +137,7 @@ export class Hud {
     this.controls.sound.onclick = () => cb.toggleSound();
     this.controls.alljev.onclick = () => cb.setAllBrains("jev");
     this.controls.allbase.onclick = () => cb.setAllBrains("baseline");
+    this.controls.alltrained.onclick = () => cb.setAllBrains("trained");
     this.controls.new.onclick = () => cb.newMatch();
     this.controls.garage.onclick = () => cb.toggleDesigner();
   }
@@ -183,7 +195,7 @@ export class Hud {
     this.jevInfo = { ...this.jevInfo, ...info };
     const i = this.jevInfo;
     if (!i.configured) {
-      this.jevEl.innerHTML = `<div class="jev-title off">JEV OFFLINE</div><div class="jev-sub">No TYPESAFE_API_KEY on the server — all bots on baseline logic.</div>`;
+      this.jevEl.innerHTML = `<div class="jev-title off">JEV OFFLINE</div><div class="jev-sub">No TYPESAFE_API_KEY on the server — Jev bots run the local trained brain instead (baseline if that is not loaded).</div>`;
       return;
     }
     this.jevEl.innerHTML = `
@@ -195,6 +207,12 @@ export class Hud {
         <span>errors</span><b>${i.errors ?? 0}</b>
         <span>tokens in</span><b>${((i.inputTokens ?? 0) / 1000).toFixed(1)}k</b>
       </div>`;
+  }
+
+  setTrained(info: TrainedInfo) {
+    this.netEl.innerHTML = info.loaded
+      ? `<div class="jev-title net"><span class="dot"></span>TRAINED BRAIN <span class="model">local</span></div><div class="jev-sub">${info.detail}</div>`
+      : `<div class="jev-title off">TRAINED BRAIN OFF</div><div class="jev-sub">${info.detail}</div>`;
   }
 
   setControls(paused: boolean, speed: number, autoCam: boolean, debug: boolean, muted = false) {
@@ -251,8 +269,10 @@ export class Hud {
       c.charge.classList.toggle("ready", bot.weaponReady);
       c.status.textContent = statusLine(bot);
       if (brain) {
-        c.brain.textContent = brain.mode === "jev" ? "JEV" : "BASELINE";
-        c.brain.className = `brain-toggle ${brain.mode}${brain.status.inFlight ? " busy" : ""}`;
+        const eff = brain.effectiveMode;
+        c.brain.textContent = brain.mode === "jev" ? (eff === "jev" ? "JEV" : "JEV→NET") : brain.mode === "trained" ? "TRAINED" : "BASELINE";
+        c.brain.className = `brain-toggle ${eff}${brain.status.inFlight ? " busy" : ""}`;
+        c.brain.title = "Click to cycle Jev → Trained → Baseline";
       }
       const it = bot.intent;
       c.maneuver.textContent = maneuverLabel(it.maneuver);
@@ -264,7 +284,8 @@ export class Hud {
         .join("");
       c.danger.textContent = `danger ${(it.danger * 100).toFixed(0)}%`;
       c.danger.classList.toggle("hot", it.danger > 0.65);
-      c.latency.textContent = it.source === "jev" ? `${it.latencyMs} ms` : it.source === "fallback" ? "fallback" : "scripted";
+      c.latency.textContent =
+        it.source === "jev" ? `${it.latencyMs} ms` : it.source === "trained" ? `${Math.max(1, Math.round(it.latencyMs * 1000))} µs` : it.source === "fallback" ? "fallback" : "scripted";
     }
   }
 
@@ -276,7 +297,7 @@ export class Hud {
     const rows = r.standings
       .map((s, i) => {
         const b = world.bot(s.id)!;
-        const brain = b.stats.jevDecisions > 0 ? "Jev" : "baseline";
+        const brain = [b.stats.jevDecisions > 0 ? "Jev" : "", b.stats.trainedDecisions > 0 ? "trained" : "", b.stats.decisions > b.stats.jevDecisions + b.stats.trainedDecisions ? "baseline" : ""].filter(Boolean).join(" + ") || "baseline";
         return `<tr class="${s.id === r.winner ? "win" : ""}"><td>${i + 1}</td><td style="color:#${b.def.color.toString(16).padStart(6, "0")}">${s.id}</td><td>${s.eliminated ? s.eliminated.toUpperCase() : s.hp + " hp"}</td><td>${s.damageDealt} dmg</td><td>${b.stats.hits} hits</td><td>${b.stats.decisions} decisions (${brain})</td></tr>`;
       })
       .join("");

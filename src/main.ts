@@ -3,7 +3,8 @@ import { DEFAULT_ROSTER, stockBuild } from "@shared/bots/index";
 import type { BotBuild } from "@shared/build";
 import { cloneBuild, normalizeBuild } from "@shared/build";
 import { defFromBuild } from "@shared/logic";
-import { Brain, type BrainMode } from "./brain/brains";
+import { BRAIN_MODES, Brain, type BrainMode } from "./brain/brains";
+import { TrainedNet, type ModelFile } from "./brain/trained/net";
 import { BotMesh } from "./render/botMesh";
 import { Effects } from "./render/effects";
 import { ArenaScene, toWorld } from "./render/scene";
@@ -22,7 +23,7 @@ import type { BotKind } from "@shared/types";
 /**
  * S1 Arena entry point. Fixed-step simulation, async brains, Three.js rendering, HTML HUD, and the Garage
  * (designer) overlay. Keyboard: Space pause · N new match · C camera · D debug · M mute · 1/2/3 speed ·
- * J/B all Jev/baseline · G garage.
+ * J/T/B all Jev/trained/baseline · G garage.
  */
 
 const FIXED_DT = 1 / 60;
@@ -129,13 +130,11 @@ const hud = new Hud(document.getElementById("hud")!, {
   toggleBrain(id) {
     const b = brains.get(id);
     if (!b) return;
-    b.mode = b.mode === "jev" ? "baseline" : "jev";
-    hud.ticker(`${id} switched to ${b.mode === "jev" ? "Jev" : "baseline"} brain`, b.mode === "jev" ? "jev" : "base");
+    b.mode = BRAIN_MODES[(BRAIN_MODES.indexOf(b.mode) + 1) % BRAIN_MODES.length];
+    hud.ticker(`${id} switched to ${MODE_LABEL[b.mode]} brain`, MODE_CLS[b.mode]);
   },
   setAllBrains(mode) {
-    defaultMode = mode;
-    for (const b of brains.values()) b.mode = mode;
-    hud.ticker(`All bots now on ${mode === "jev" ? "Jev" : "baseline"} brains`, mode === "jev" ? "jev" : "base");
+    setAllBrains(mode);
   },
   newMatch: () => startMatch(),
   togglePause() {
@@ -165,6 +164,31 @@ const hud = new Hud(document.getElementById("hud")!, {
     designer.toggle();
   },
 });
+const MODE_LABEL: Record<BrainMode, string> = { jev: "Jev", trained: "trained", baseline: "baseline" };
+const MODE_CLS: Record<BrainMode, string> = { jev: "jev", trained: "net", baseline: "base" };
+function setAllBrains(mode: BrainMode) {
+  defaultMode = mode;
+  for (const b of brains.values()) b.mode = mode;
+  hud.ticker(`All bots now on ${MODE_LABEL[mode]} brains`, MODE_CLS[mode]);
+}
+
+/** The trained brain's weights are a static file; the arena runs fine (baseline) until or unless they load. */
+async function loadTrained() {
+  try {
+    const res = await fetch("/models/trained-brain.json");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const net = new TrainedNet((await res.json()) as ModelFile);
+    Brain.trainedNet = net;
+    const info = net.file.info as { rows?: number; params?: number; datasets?: string[] } | undefined;
+    hud.setTrained({
+      loaded: true,
+      detail: `${((info?.params ?? 0) / 1000).toFixed(0)}k weights · ${((info?.rows ?? 0) / 1000).toFixed(0)}k rollout-labeled moments · ${info?.datasets?.join(" + ") ?? ""}`,
+    });
+  } catch (err) {
+    hud.setTrained({ loaded: false, detail: `No model (${err instanceof Error ? err.message : String(err)}). Train one: see docs/trained-brain.md.` });
+  }
+}
+
 function syncControls() {
   hud.setControls(paused, speed, scene.autoCamera, debug, sound.muted);
 }
@@ -426,9 +450,6 @@ async function pollJev() {
     if (h.jev) {
       const s = (await (await fetch("/api/stats")).json()) as Partial<JevInfo>;
       Object.assign(info, s);
-    } else if (defaultMode === "jev") {
-      defaultMode = "baseline";
-      for (const b of brains.values()) b.mode = "baseline";
     }
     hud.setJev(info);
   } catch {
@@ -477,13 +498,15 @@ window.addEventListener("keydown", (ev) => {
       break;
     case "j":
     case "J":
-      defaultMode = "jev";
-      for (const b of brains.values()) b.mode = "jev";
+      setAllBrains("jev");
+      break;
+    case "t":
+    case "T":
+      setAllBrains("trained");
       break;
     case "b":
     case "B":
-      defaultMode = "baseline";
-      for (const b of brains.values()) b.mode = "baseline";
+      setAllBrains("baseline");
       break;
     case "m":
     case "M":
@@ -548,6 +571,7 @@ syncControls();
 Object.assign(window as unknown as Record<string, unknown>, {
   __s1: { get world() { return world; }, get brains() { return brains; }, sound, scene, effects, designer, roster },
 });
+void loadTrained();
 void pollJev();
 setInterval(() => void pollJev(), 2500);
 requestAnimationFrame(frame);
