@@ -22,7 +22,11 @@ same roster and seed, so 50% is even; ±2.5 points is one standard error at 400 
 | Danger: AUC vs "actually hit within 1.5 s" (held out; 0.5 = chance) | **0.874** | | 0.63* |
 | Decision time | **~0.1–0.4 ms** in the browser, synchronous | ~0 | 83 ms p50 + network |
 | Cost per match | $0 | $0 | ~$0.02 |
-| Where it runs | browser, 233 KB of float16 weights | browser | server → TypeSafe |
+| Where it runs | browser, 392 KB of float16 weights | browser | server → TypeSafe |
+
+The table was measured with iteration 2. The game now ships **g3b**, the first model promoted by the
+[improvement loop](improvement-loop.md): +5.0 Elo [2.4, 7.6] over iteration 2 head-to-head (21,280 side-swapped
+pairs, SPRT), and +125 Elo vs baseline on the league ladder (iteration 2: +122).
 
 \* Jev's AUC is from the earlier d1 evaluation corpus (four stock bots, older sim), so it is indicative,
 not a same-corpus comparison. In the Jev tournament Jev had its real latency: each answer was applied after
@@ -81,7 +85,8 @@ danger = sigmoid(danger · c)                     P(I get hit in the next 1.5 s)
 q_i    = pair2 · relu(pair1 · [e_i, c])          17 techniques × 6 outcomes, for opponent i
 ```
 
-About 87k weights, 96 hidden units, stored as float16 in `public/models/trained-brain.json` (~230 KB).
+The shipped model (g3b) has 128 hidden units and about 145k weights, stored as float16 in
+`public/models/trained-brain.json` (~390 KB; ~240 µs per cold forward pass). Iterations 0–2 used 96 hidden units (~87k weights, ~230 KB).
 Training is PyTorch on the CPU (`scripts/train/train.py`): masked MSE on the outcomes that were rolled out
 (each component scaled to unit variance), plus binary cross-entropy for danger. 20–60 s per run on the M5, depending on how many datasets are stacked.
 
@@ -119,7 +124,7 @@ set of network weights serves every bot.
 
 Presets: Balanced, Berserker, Turtle, Showboat, Hazard hunter, Grudge match, Wildcard.
 
-Measured with the shipped model, each preset against Balanced, everyone on the trained brain
+Measured with the iteration-2 model, each preset against Balanced, everyone on the trained brain
 (200 matches each; ±3.5 points):
 
 | preset | win share vs Balanced | avg damage (vs Balanced's) | what changes |
@@ -145,7 +150,8 @@ the behaviour *and* continuation brain for most bots when generating the next da
 | --- | --- | --- | --- |
 | iteration 0 | 300k moments, baseline continuations | 63.0% / 67.0% | |
 | iteration 1 | + 281k moments, iteration-0 brain in the loop | 69.3% / 64.0% | 50.2% / 54.0% vs iteration 0 |
-| **iteration 2 (shipped)** | + 279k moments, iteration-1 brain in the loop | **70.0% / 67.3%** | 53.3% / 52.5% vs iteration 1; 56.8% vs iteration 0 |
+| iteration 2 | + 279k moments, iteration-1 brain in the loop | **70.0% / 67.3%** | 53.3% / 52.5% vs iteration 1; 56.8% vs iteration 0 |
+| **g3b (shipped)** | league generation 3: iterations 0–2 + 236k moments, iteration-2 brain in the loop, curriculum-weighted rosters; 128 hidden, 18 epochs | +125 Elo on the league ladder (iteration 2: +122) | +5.0 Elo [2.4, 7.6] vs iteration 2 (SPRT, 21,280 pairs) |
 
 These head-to-head numbers came from 400-match runs (±17 Elo at 95%). Re-measured later in the league with
 3,000 side-swapped pairs each on mixed builds, both rounds helped, but the sizes were the other way round:

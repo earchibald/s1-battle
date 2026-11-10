@@ -159,10 +159,10 @@ Ladder after generation 4 (Bradley–Terry, baseline = 0, 95% bootstrap CI, ~120
 
 | model | Elo | 95% CI |
 | --- | ---: | --- |
-| **g3b** (champion) | +125 | [122, 129] |
+| **g3b** (champion, shipped) | +125 | [122, 129] |
 | g4b | +124 | [116, 131] |
 | g3a | +124 | [111, 136] |
-| iter2 (shipped today) | +122 | [118, 125] |
+| iter2 (shipped before g3b) | +122 | [118, 125] |
 | g4a | +117 | [107, 129] |
 | iter1 | +110 | [106, 115] |
 | iter0 | +94 | [89, 100] |
@@ -184,8 +184,8 @@ What the statistics say:
   against baseline bots, not a model flaw. The per-weapon breakdown will show whether more rounds help;
   if they do not, switch the curriculum to matchup cells or turn it down (`focusTemp`).
 
-g3b has **not** been copied into the game. To ship it: `cp data/league/models/g3b.json public/models/trained-brain.json`
-(or run future generations with `SHIP=1`).
+g3b is shipped in `public/models/trained-brain.json` (2026-11-09). Future champions ship the same way with
+`SHIP=1 scripts/league/loop.sh N`, or by hand: `cp data/league/models/<name>.json public/models/trained-brain.json`.
 
 ## Ideas next
 
