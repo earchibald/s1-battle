@@ -32,11 +32,21 @@ export function randomBuild(kind: BotKind, rng: Rng, mutate = 0.75): BotBuild {
   return b;
 }
 
-/** Four bots; mostly distinct weapons, sometimes a duplicate, like a real roster. */
-export function randomRoster(rng: Rng): BotBuild[] {
+/**
+ * Four bots; mostly distinct weapons, sometimes a duplicate, like a real roster. `weights` (per weapon kind,
+ * default 1) skews which weapons appear: the league's curriculum uses it to oversample the champion's weak spots.
+ */
+export function randomRoster(rng: Rng, weights?: Partial<Record<BotKind, number>>): BotBuild[] {
+  const total = weights ? STOCK_ORDER.reduce((a, k) => a + (weights[k] ?? 1), 0) : 0;
+  const pickKind = (): BotKind => {
+    if (!weights) return rng.pick(STOCK_ORDER);
+    let r = rng.next() * total;
+    for (const k of STOCK_ORDER) if ((r -= weights[k] ?? 1) <= 0) return k;
+    return STOCK_ORDER[STOCK_ORDER.length - 1];
+  };
   const kinds: BotKind[] = [];
   while (kinds.length < 4) {
-    const k = rng.pick(STOCK_ORDER);
+    const k = pickKind();
     if (kinds.includes(k) && rng.next() > 0.12) continue;
     kinds.push(k);
   }
