@@ -91,8 +91,8 @@ The check script confirms the fit recovers known strengths within ~6 Elo and tha
    intervals. Each weapon gets a weight `exp((mean − shrunk share) / 0.08)`, where the share is shrunk toward
    the mean with 300 pseudo-games and the weight is clamped to [0.5, 2.5] and normalized. `gen.ts --focus`
    samples rosters with those weights, so the next dataset spends more rollouts where the champion loses.
-   Example: iter2 wins 82% of its bot-matches with the hammer but 58% with the spinner, so the spinner gets
-   ~3.4× the hammer's weight.
+   Example (generation 3): iter2 won 80% of its bot-matches with the hammer but 61% with the saw, so the saw
+   got 1.52 weight and the hammer 0.41.
 2. **Expert iteration.** The champion is both the behaviour brain and the rollout continuation brain while
    generating, so each dataset labels "what happens if I do X, then play like the current best".
 3. **A rolling window.** Candidates train on the newest `window` datasets (default 4), so old, weaker-policy
@@ -130,7 +130,8 @@ temperature. Candidate variants are the `CANDIDATES` environment variable of `lo
 list of `train.py` argument sets.
 
 Cost per generation on the M5 Max with 14 workers: diagnosis ~20 s, data ~16–20 min, training ~1–3 min per
-candidate, gate 1–4 min. Data generation is still the bottleneck; the statistics are nearly free.
+candidate, gate 1–10 min (an SPRT whose true difference sits between the bounds runs longest; two
+128-hidden networks play ~40–50 pairs a second on 14 workers, network vs baseline ~145). Data generation is still the bottleneck; the statistics are nearly free.
 
 ## Files
 
@@ -147,7 +148,44 @@ candidate, gate 1–4 min. Data generation is still the bottleneck; the statisti
 
 ## Results
 
-RESULTS_PLACEHOLDER
+First two generations, run 2026-11-09 on the M5 Max with 14 workers (≈ 75 min wall clock for both):
+
+| gen | champion | diagnosis vs baseline | candidates screened vs champion (1,200 pairs) | SPRT on fresh seeds | guards | outcome |
+| --- | --- | --- | --- | --- | --- | --- |
+| 3 | iter2 | +125 Elo [116, 134] | g3a (96 hidden) +2 [−9, 13] · **g3b (128 hidden, 18 epochs) +6 [−5, 16]** | g3b **+5.0 Elo [2.4, 7.6]**, 21,280 pairs, LLR 4.53 → H1 | vs baseline −0.9 pts [−2.8, 0.9] ✓ · vs iter1 +0.3 pts [−1.4, 2.0] ✓ | **g3b promoted** |
+| 4 | g3b | +122 Elo [114, 131] | g4a −8 [−19, 3] · g4b −2 [−13, 9] | g4b −1.4 Elo [−8.2, 5.4], 3,080 pairs, LLR −3.61 → H0 | – | g3b kept |
+
+Ladder after generation 4 (Bradley–Terry, baseline = 0, 95% bootstrap CI, ~120k pairs in total):
+
+| model | Elo | 95% CI |
+| --- | ---: | --- |
+| **g3b** (champion) | +125 | [122, 129] |
+| g4b | +124 | [116, 131] |
+| g3a | +124 | [111, 136] |
+| iter2 (shipped today) | +122 | [118, 125] |
+| g4a | +117 | [107, 129] |
+| iter1 | +110 | [106, 115] |
+| iter0 | +94 | [89, 100] |
+| baseline | 0 | |
+
+What the statistics say:
+
+- **Expert iteration is plateauing.** Head-to-head gains per round: +22.5 (iter0→1), +9.7 (1→2), +5.0 (2→g3),
+  then none (g4). More of the same data will not buy much more; the next gains need a new ingredient (see
+  ideas below). A 400-match evaluation could not have shown this; the gate shows it at a glance.
+- **Capacity mattered a little.** Both generations' wider 128-hidden candidate screened ahead of the
+  96-hidden one trained on the same data (+6 vs +2, −2 vs −8). g3b is 392 KB instead of 238 KB and ~240 µs per
+  cold forward pass instead of ~200 µs.
+- **The SPRT spends matches where they are needed.** g3b's true edge (~5 Elo) sat inside the 0–8 indifference
+  zone, the slowest case, so it took 21,280 pairs (~9 min, since both sides run networks). g4b was settled
+  in 3,080.
+- **The curriculum has not yet closed the weak spots.** Saw, flipper and spinner stayed the champion's worst
+  weapons (59–62% vs hammer 80%) after one curriculum round. Part of that gap is likely weapon balance
+  against baseline bots, not a model flaw. The per-weapon breakdown will show whether more rounds help;
+  if they do not, switch the curriculum to matchup cells or turn it down (`focusTemp`).
+
+g3b has **not** been copied into the game. To ship it: `cp data/league/models/g3b.json public/models/trained-brain.json`
+(or run future generations with `SHIP=1`).
 
 ## Ideas next
 
