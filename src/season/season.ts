@@ -461,8 +461,9 @@ export function scoreOutcome(o: MatchOutcome): PlaceRow[] {
 /**
  * Record a finished fixture and move the season on: when the league ends the Last Chance match is drawn up,
  * when that ends the Grand Final is, and the Grand Final crowns the champion. Returns a new state.
+ * `quiet` skips the headlines, for callers that roll thousands of hypothetical seasons (the betting pricer).
  */
-export function applyResult(s: SeasonState, fixtureId: string, outcome: MatchOutcome, simulated = false): SeasonState {
+export function applyResult(s: SeasonState, fixtureId: string, outcome: MatchOutcome, simulated = false, quiet = false): SeasonState {
   const fx = s.fixtures.find((f) => f.id === fixtureId);
   if (!fx || recordFor(s, fixtureId)) return s;
   const rows = scoreOutcome(outcome);
@@ -496,7 +497,7 @@ export function applyResult(s: SeasonState, fixtureId: string, outcome: MatchOut
   } else if (fx.stage === "final") {
     next.champion = rows[0].id;
   }
-  rec.headlines = headlines(s, next, rec);
+  if (!quiet) rec.headlines = headlines(s, next, rec);
   return next;
 }
 

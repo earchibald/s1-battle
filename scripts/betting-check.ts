@@ -9,7 +9,8 @@
  * the business of scripts/betting-sim.ts; this file is about the system never being wrong.
  */
 import { createHash } from "node:crypto";
-import { candidatePool, createSeason, isComplete, nextFixture, recordFor, type SeasonState } from "../src/season/season";
+import { applyResult, candidatePool, createSeason, isComplete, nextFixture, recordFor, type SeasonState } from "../src/season/season";
+import { simulateOutcome } from "../src/season/runner";
 import { Book, BookError, LOSE, WIN, defaultBookConfig, payoutFor, share, tickFloor, type BetRequest, type MarketSpec, type WalletPort } from "../src/betting/book";
 import { verifyFair } from "../src/betting/fair";
 import { Ledger, LedgerError } from "../src/betting/ledger";
@@ -246,10 +247,11 @@ group("book: persistence and tamper detection", () => {
 group("book: outside wallet mode", () => {
   const bal = new Map<string, number>([["p1", 500]]);
   const log: string[] = [];
+  const notes: string[] = [];
   const wallet: WalletPort = {
     balance: (id) => bal.get(id) ?? 0,
-    debit: (id, amt, ref) => ((bal.get(id) ?? 0) < amt ? false : (bal.set(id, bal.get(id)! - amt), log.push(`-${amt} ${ref}`), true)),
-    credit: (id, amt, kind, ref) => void (bal.set(id, (bal.get(id) ?? 0) + amt), log.push(`+${amt} ${kind} ${ref}`)),
+    debit: (id, amt, ref, note) => ((bal.get(id) ?? 0) < amt ? false : (bal.set(id, bal.get(id)! - amt), log.push(`-${amt} ${ref}`), notes.push(note), true)),
+    credit: (id, amt, kind, ref, note) => void (bal.set(id, (bal.get(id) ?? 0) + amt), log.push(`+${amt} ${kind} ${ref}`), notes.push(note)),
   };
   const b = freshBook(wallet);
   throws(() => b.grant("p1", 10), BookError, "no minting into an outside wallet");
@@ -264,6 +266,7 @@ group("book: outside wallet mode", () => {
   ok(bal.get("p1") === 340 + 350 + 60, "payout and refund credited to the wallet");
   ok(log.join(" | ") === "-100 t:b1 | -60 t:b2 | +350 payout t:b1 | +60 refund t:b2", "each movement is tagged with its bet id");
   ok(b.ledger.balance("ext:p1") === -160 + 350 + 60 && b.audit().length === 0, "the ledger mirrors the wallet and audits clean");
+  ok(notes[0] === "A · m at 3.50" && notes.length === 4, `wallet statements carry a readable note (${notes[0]})`);
 });
 
 /* -------------------------------------------------------------------------------------------------- */
@@ -375,6 +378,84 @@ group("season: guards and abandonment", () => {
   const state: SeasonState = sb.season;
   ok(!recordFor(state, fa.id), "no result was recorded");
 });
+
+group("season: a book that follows a season advanced elsewhere (the browser's arena)", () => {
+  const sb = newSeasonBook(6);
+  let outside: SeasonState = sb.season;
+  sb.open();
+  let step = 0;
+  while (!isComplete(outside)) {
+    scriptedBets(sb, `o${step}`);
+    const fx = nextFixture(outside)!;
+    // Every third fixture starts before the desk was told: adopt() must close it before settling.
+    if (step % 3 !== 2) {
+      sb.lock(fx.id);
+      outside = { ...outside, fixtures: outside.fixtures.map((f) => (f.id === fx.id ? sb.season.fixtures.find((x) => x.id === fx.id)! : f)) };
+    }
+    outside = applyResult(outside, fx.id, simulateOutcome(outside, nextFixture(outside)!), true);
+    const fresh = sb.adopt(outside);
+    ok(fresh.length === 1 && fresh[0].fixtureId === fx.id, `${fx.id}: adopted one new result`);
+    ok(sb.marketsFor(fx.id).every((m) => m.status === "settled"), `${fx.id}: its markets settled`);
+    ok(sb.book.audit().length === 0, `${fx.id}: audit clean`);
+    sb.open();
+    step++;
+  }
+  ok(sb.markets().every((m) => m.status === "settled") && sb.book.bets.every((b) => b.status !== "open"), "everything settled at the end");
+  throws(() => sb.adopt(newSeasonBook(7).season), BookError, "adopting a different season");
+  throws(() => sb.adopt({ ...outside, records: outside.records.slice(0, 3) }), BookError, "adopting an earlier state");
+});
+
+group("season: one book and its wallets across two seasons (the server)", () => {
+  const first = newSeasonBook(8);
+  first.open();
+  while (!isComplete(first.season)) {
+    scriptedBets(first, `a${first.season.records.length}`);
+    first.play(first.round()[0].id);
+  }
+  const carried = first.book.balance("ann");
+  const pool = candidatePool([], []).filter((c) => c.selected);
+  const second = new SeasonBook({ seasonId: "s8b", season: createSeason(pool, 9), book: first.book, pricer: first.pricer, entropy: entropy(99) });
+  second.open();
+  ok(second.book.balance("ann") === carried, "the wallet carries over");
+  ok(second.markets().length > 0 && second.markets().every((m) => m.id.startsWith("s8b/")), "the new season has its own markets");
+  while (!isComplete(second.season)) {
+    scriptedBets(second, `b${second.season.records.length}`);
+    second.play(second.round()[0].id);
+  }
+  ok(first.markets().every((m) => m.status === "settled") && second.markets().every((m) => m.status === "settled"), "both seasons fully settled");
+  const v = [...first.verify(), ...second.verify()];
+  ok(v.length === 0, `both seasons verify on the shared book: ${v[0] ?? ""}`);
+});
+
+{
+  const before = failed;
+  const t = performance.now();
+  const pool = candidatePool([], []).filter((c) => c.selected);
+  const odd = pool.map((c, i) => (i === 0 ? { ...c, build: { ...c.build, name: "__proto__" } } : i === 1 ? { ...c, build: { ...c.build, name: `A|B/~"<x>` } } : c));
+  const season = createSeason(odd, 11);
+  const a = new Pricer({ ...SMALL, seed: 5 });
+  const b = new Pricer({ ...SMALL, seed: 5 });
+  const blocking = a.rollouts(season);
+  let pauses = 0;
+  const sliced = await b.rolloutsAsync(season, async () => (pauses++, true), 1);
+  ok(!!sliced && JSON.stringify(sliced.map((x) => x.champion)) === JSON.stringify(blocking.map((x) => x.champion)), "same rollouts either way");
+  ok(pauses > 5, `the sliced run yielded ${pauses} times`);
+  ok((await new Pricer({ ...SMALL, seed: 5 }).rolloutsAsync(season, async () => false, 0)) === null, "a superseded job stops");
+  const book = new Book(defaultBookConfig("odd"), { now: clock() });
+  book.grant("ann", 1000);
+  const sb = new SeasonBook({ seasonId: "odd", season, book, pricer: a, entropy: entropy(11) });
+  sb.open(blocking);
+  const win = sb.marketsFor(sb.round()[0].id).find((m) => m.kind === "match_win")!;
+  const champ = sb.seasonLong().find((m) => m.kind === "season_champion")!;
+  ok(champ.selections.some((x) => x.id === "__proto__") && Object.keys(JSON.parse(JSON.stringify(champ))).length > 0, "awkward callsigns are ordinary selections");
+  const q = book.quote(champ.id, "ann").find((x) => x.selectionId === "__proto__");
+  ok(!q || q.price === 0 || code(book.placeBet({ userId: "ann", key: "p", marketId: champ.id, selectionId: "__proto__", stake: 5 })) === "ok", "and can be bet on");
+  void win;
+  while (!isComplete(sb.season)) sb.play(sb.round()[0].id);
+  const v = sb.verify();
+  ok(v.length === 0 && sb.markets().every((m) => m.status === "settled"), `the odd-named season settles and verifies: ${v[0] ?? ""}`);
+  console.log(`${failed === before ? "ok  " : "FAIL"} pricing: sliced run equals the blocking run; a bot may be called anything (${(performance.now() - t).toFixed(0)} ms)`);
+}
 
 console.log(`\n${checks} checks, ${failed} failed`);
 if (failed) process.exitCode = 1;

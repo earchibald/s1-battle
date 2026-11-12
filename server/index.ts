@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { bettingRouter } from "./betting";
 import { decide, getStats, jevConfigured, jevModel } from "./jev";
 import type { BotSense } from "../shared/bots/common";
 import type { BotKind } from "../shared/types";
@@ -29,6 +30,9 @@ app.post("/api/decide", async (req, res) => {
   const result = await decide(body.kind, body.sense, body.build);
   res.status(result.ok ? 200 : (result.status ?? 502)).json(result);
 });
+
+/** Season betting: the house, wallets and markets (server/betting.ts). */
+app.use("/api/bet", bettingRouter());
 
 if (process.env.NODE_ENV === "production") {
   const dist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist");

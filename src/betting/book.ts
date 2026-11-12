@@ -124,8 +124,8 @@ export const defaultBookConfig = (id: string): BookConfig => ({ id, houseBank: 1
 export interface WalletPort {
   balance(userId: string): number;
   /** Take `amount`; false (and no change) when the balance is short. */
-  debit(userId: string, amount: number, ref: string): boolean;
-  credit(userId: string, amount: number, kind: "payout" | "refund", ref: string): void;
+  debit(userId: string, amount: number, ref: string, note: string): boolean;
+  credit(userId: string, amount: number, kind: "payout" | "refund", ref: string, note: string): void;
 }
 
 export interface BetRequest {
@@ -207,11 +207,14 @@ export class Book {
   private staked = new Map<string, number>();
   private wallet: WalletPort | null;
   private now: () => number;
+  /** How a bet reads in an outside wallet's statement. */
+  private describe: (m: Market, selectionId: string) => string;
 
-  constructor(config: BookConfig, opts: { wallet?: WalletPort; now?: () => number; restore?: BookJSON } = {}) {
+  constructor(config: BookConfig, opts: { wallet?: WalletPort; now?: () => number; restore?: BookJSON; describe?: (m: Market, selectionId: string) => string } = {}) {
     this.config = config;
     this.wallet = opts.wallet ?? null;
     this.now = opts.now ?? (() => Date.now());
+    this.describe = opts.describe ?? ((m, selectionId) => `${selectionId} · ${m.label}`);
     if (opts.restore) {
       this.ledger = Ledger.fromJSON(opts.restore.ledger);
       for (const m of opts.restore.markets) this.markets.set(m.id, structuredClone(m));
@@ -378,7 +381,8 @@ export class Book {
     if (risk > this.houseBalance) return no("house_limit", "the house cannot cover that bet", { price, maxStake });
 
     const id = `${this.config.id}:b${this.bets.length + 1}`;
-    if (this.wallet && !this.wallet.debit(userId, stake, id)) return no("insufficient_funds", "not enough credits", { price, maxStake });
+    const note = `${this.describe(m, selectionId)} at ${(price / 100).toFixed(2)}`;
+    if (this.wallet && !this.wallet.debit(userId, stake, id, note)) return no("insufficient_funds", "not enough credits", { price, maxStake });
     const t = this.now();
     try {
       this.ledger.post(
@@ -392,7 +396,7 @@ export class Book {
         t,
       );
     } catch (e) {
-      this.wallet?.credit(userId, stake, "refund", id);
+      this.wallet?.credit(userId, stake, "refund", id, note);
       throw e;
     }
     const bet: Bet = { id, key, userId, marketId, selectionId, stake, price, risk, placedAt: t, status: "open", payout: 0, settledAt: null };
@@ -484,7 +488,10 @@ export class Book {
     this.hold(bet, -1);
     bet.payout = payout;
     bet.settledAt = t;
-    if (payout > 0) this.wallet?.credit(bet.userId, payout, kind === "refund" ? "refund" : "payout", bet.id);
+    if (payout > 0 && this.wallet) {
+      const m = this.markets.get(bet.marketId);
+      this.wallet.credit(bet.userId, payout, kind === "refund" ? "refund" : "payout", bet.id, `${m ? this.describe(m, bet.selectionId) : bet.selectionId} at ${(bet.price / 100).toFixed(2)}`);
+    }
   }
 
   /* ---------------------------------------------------------------------------------------------- */
@@ -585,7 +592,7 @@ export class Book {
   }
 
   /** Rebuild a book from its saved form and refuse it if the audit finds anything wrong. */
-  static fromJSON(json: BookJSON, opts: { wallet?: WalletPort; now?: () => number } = {}): Book {
+  static fromJSON(json: BookJSON, opts: { wallet?: WalletPort; now?: () => number; describe?: (m: Market, selectionId: string) => string } = {}): Book {
     if (!json || json.v !== 1) throw new BookError("unknown book format");
     const book = new Book(json.config, { ...opts, restore: structuredClone(json) });
     const bad = book.audit();

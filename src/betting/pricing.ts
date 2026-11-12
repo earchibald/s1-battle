@@ -99,34 +99,82 @@ export class Pricer {
     return t;
   }
 
-  private draw(s: SeasonState, fx: Fixture, real: boolean): MatchOutcome {
+  /** The pool for a lineup: in its true start-corner order when the fixture exists, sorted when it is hypothetical. */
+  private poolOf(s: SeasonState, fx: Fixture, real: boolean) {
     const lineup = real ? fx.bots : fx.bots.slice().sort();
     const key = `${this.tag(s)}|${real ? "o" : "c"}|${lineup.join(",")}`;
     let pool = this.pools.get(key);
     if (!pool) this.pools.set(key, (pool = { outs: [], hits: 0 }));
+    return { pool, lineup };
+  }
+
+  private simInto(s: SeasonState, fx: Fixture, lineup: string[], pool: { outs: MatchOutcome[] }) {
+    pool.outs.push(this.simulate(s, { ...fx, bots: lineup, seed: Math.floor(this.rand() * 4294967296) >>> 0 }));
+    this.sims++;
+  }
+
+  private draw(s: SeasonState, fx: Fixture, real: boolean): MatchOutcome {
+    const { pool, lineup } = this.poolOf(s, fx, real);
     pool.hits++;
     const want = real ? this.config.poolSize : Math.min(this.config.hypoMax, 4 + (pool.hits >> 2));
-    while (pool.outs.length < want) {
-      pool.outs.push(this.simulate(s, { ...fx, bots: lineup, seed: Math.floor(this.rand() * 4294967296) >>> 0 }));
-      this.sims++;
-    }
+    while (pool.outs.length < want) this.simInto(s, fx, lineup, pool);
     return pool.outs[Math.floor(this.rand() * pool.outs.length)];
   }
 
-  /** Play the season out from where it stands, `rollouts` times. Each result is a complete SeasonState. */
-  rollouts(s: SeasonState): SeasonState[] {
+  /**
+   * The pricing job as resumable steps: fill the pools of the fixtures that exist, one match at a time, then
+   * roll the season out. Yields its progress (0..1) after each step, so a caller can run it in slices.
+   */
+  private *work(s: SeasonState): Generator<number, SeasonState[]> {
     const real = new Set(s.fixtures.map((f) => f.id));
+    const pending = s.fixtures.filter((f) => !recordFor(s, f.id)).map((fx) => ({ fx, ...this.poolOf(s, fx, true) }));
+    const toSim = pending.reduce((n, p) => n + Math.max(0, this.config.poolSize - p.pool.outs.length), 0);
+    // A rollout is cheap next to a match; weigh it so the progress bar moves evenly in time.
+    const total = toSim + this.config.rollouts / 25 || 1;
+    let done = 0;
+    for (const p of pending)
+      while (p.pool.outs.length < this.config.poolSize) {
+        this.simInto(s, p.fx, p.lineup, p.pool);
+        yield ++done / total;
+      }
     const out: SeasonState[] = [];
     for (let i = 0; i < this.config.rollouts; i++) {
       let st = s;
       while (!isComplete(st)) {
         const fx = nextFixture(st);
         if (!fx) break;
-        st = applyResult(st, fx.id, this.draw(s, fx, real.has(fx.id)), true);
+        st = applyResult(st, fx.id, this.draw(s, fx, real.has(fx.id)), true, true);
       }
       out.push(st);
+      yield Math.min(1, (toSim + (i + 1) / 25) / total);
     }
     return out;
+  }
+
+  /** Play the season out from where it stands, `rollouts` times. Each result is a complete SeasonState. */
+  rollouts(s: SeasonState): SeasonState[] {
+    const job = this.work(s);
+    let step = job.next();
+    while (!step.done) step = job.next();
+    return step.value;
+  }
+
+  /**
+   * The same job in slices of about a frame, for a browser's main thread. `pause` is awaited between slices
+   * with the progress so far; resolving false abandons the job (returns null).
+   */
+  async rolloutsAsync(s: SeasonState, pause: (progress: number) => Promise<boolean>, sliceMs = 12): Promise<SeasonState[] | null> {
+    const job = this.work(s);
+    let step = job.next();
+    let since = performance.now();
+    while (!step.done) {
+      if (performance.now() - since >= sliceMs) {
+        if (!(await pause(step.value))) return null;
+        since = performance.now();
+      }
+      step = job.next();
+    }
+    return step.value;
   }
 
   /**
@@ -188,19 +236,16 @@ export class Pricer {
     const c = this.config;
     // Match and round markets hang on one or two fixtures, so their evidence is the pool, not the rollout count.
     const cap = spec.scope === "season" ? c.rollouts : Math.min(c.rollouts, c.poolSize);
-    const out: Prices = {};
-    for (const x of spec.selections) {
-      const n = counted.get(x.id)!;
-      const w = won.get(x.id)!;
-      if (n === 0) {
-        out[x.id] = { prob: 0, price: 0 };
-        continue;
-      }
-      const prob = w / n;
-      // A selection that never won in the rollouts has no price: the model cannot tell 1 in 500 from never.
-      const smoothed = (w + 0.5) / (n + 1);
-      out[x.id] = { prob, price: w > 0 ? offeredPrice(smoothed, Math.min(n, cap), c.margin[spec.kind], c.z, c.maxPrice[spec.scope], c.maxImplied) : 0 };
-    }
-    return out;
+    // Built with fromEntries, never by assignment: a bot may be called anything, "__proto__" included.
+    return Object.fromEntries(
+      spec.selections.map((x) => {
+        const n = counted.get(x.id)!;
+        const w = won.get(x.id)!;
+        if (n === 0) return [x.id, { prob: 0, price: 0 }];
+        // A selection that never won in the rollouts has no price: the model cannot tell 1 in 500 from never.
+        const smoothed = (w + 0.5) / (n + 1);
+        return [x.id, { prob: w / n, price: w > 0 ? offeredPrice(smoothed, Math.min(n, cap), c.margin[spec.kind], c.z, c.maxPrice[spec.scope], c.maxImplied) : 0 }];
+      }),
+    );
   }
 }

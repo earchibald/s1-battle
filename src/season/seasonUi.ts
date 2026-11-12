@@ -64,6 +64,17 @@ export interface SeasonHost {
   onSeasonStart?(s: SeasonState): void;
   /** A fixture has just been recorded (played in the arena or simulated). `s` already includes `rec`. */
   onResult?(s: SeasonState, rec: MatchRecord): void;
+  /** The season was cleared before it finished. */
+  onSeasonEnd?(): void;
+  /**
+   * Season betting (src/betting): a panel for the hub, its click handling, and the moment a fixture is about to
+   * be fought, when betting on it closes and the fixture gets the seed it will be played on.
+   */
+  betting?: {
+    render(s: SeasonState): string;
+    act(act: string, id: string): boolean;
+    beforeFixture(s: SeasonState, fixtureId: string): SeasonState;
+  };
 }
 
 export interface LiveFixture {
@@ -130,11 +141,13 @@ export class SeasonMode {
     clearTimeout(this.recapTimer);
     this.live = null;
     if (!this.playing || !this.state) return null;
-    const fx = nextFixture(this.state);
-    if (!fx) {
+    const upcoming = nextFixture(this.state);
+    if (!upcoming) {
       this.playing = false;
       return null;
     }
+    this.closeBetting(upcoming.id);
+    const fx = nextFixture(this.state)!;
     this.live = fx.id;
     this.log.reset();
     return { defs: fixtureDefs(this.state, fx), seed: fx.seed, label: fx.label, hook: fixtureHooks(this.state, fx)[0]?.text ?? "" };
@@ -156,6 +169,13 @@ export class SeasonMode {
     this.recapTimer = window.setTimeout(() => {
       if (this.playing && !this.live) this.show();
     }, RECAP_DELAY_MS);
+  }
+
+  /** Betting on a fixture closes the moment it is about to be fought; the book hands back its revealed seed. */
+  private closeBetting(fixtureId: string) {
+    if (!this.state || !this.host.betting) return;
+    this.state = this.host.betting.beforeFixture(this.state, fixtureId);
+    saveSeason(this.state);
   }
 
   /* ------------------------------------------------------------ overlay ---------------------------- */
@@ -202,6 +222,11 @@ export class SeasonMode {
   refresh() {
     if (this.open && this.view === "setup") this.openSetup();
     this.render();
+  }
+
+  /** Redraw the hub when something it shows moved (a bet settled, new prices). The setup screen is left alone. */
+  repaint() {
+    if (this.view !== "setup") this.render();
   }
 
   /** Whose bot this is: YOU for the user at the controls, the designer's name for anyone else's. */
@@ -260,6 +285,8 @@ export class SeasonMode {
         if (!this.state) return;
         const midMatch = this.playing && this.live !== null;
         const before = this.state.records.length;
+        const due = nextFixture(this.state);
+        if (due) this.closeBetting(due.id);
         this.state = simulateNext(this.state);
         saveSeason(this.state);
         this.shown = null;
@@ -287,10 +314,13 @@ export class SeasonMode {
         }
         this.state = null;
         saveSeason(null);
+        this.host.onSeasonEnd?.();
         this.leave();
         this.host.toast("Season cleared. Back to exhibition.");
         this.hide();
         return;
+      default:
+        if (!this.host.betting?.act(act, id)) return;
     }
     this.render();
   }
@@ -393,6 +423,7 @@ export class SeasonMode {
           <section class="sz-panel sz-table-panel">${this.renderTable(s)}</section>
           <div class="sz-mid">
             ${done ? this.renderChampion(s) : fx ? this.renderFixture(s, fx) : ""}
+            ${this.host.betting?.render(s) ?? ""}
             ${rec ? this.renderRecap(s, rec) : `<section class="sz-panel sz-empty">No matches played yet. The first result will show up here.</section>`}
           </div>
           <div class="sz-side">

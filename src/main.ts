@@ -21,6 +21,8 @@ import { accounts, fmtCredits } from "./account/accounts";
 import { AccountPanel } from "./account/accountUi";
 import { adoptLegacyRoster, loadRosterFor, saveRosterFor } from "./account/garage";
 import { prizesFor } from "./account/prizes";
+import { BettingDesk } from "./betting/desk";
+import { BettingPanel } from "./betting/deskUi";
 import { pitPhase, sawRaise } from "./sim/arena";
 import { toggleFullscreen } from "./ui/fullscreen";
 import type { HammerPhase } from "./sim/bot";
@@ -178,8 +180,15 @@ const hud = new Hud(document.getElementById("hud")!, {
     account.toggle();
   },
 });
+/** Season betting (src/betting/): the book on the season in progress, staked from the users' wallets. */
+const desk: BettingDesk = new BettingDesk((what) => {
+  // Pricing progress ticks many times a second: move the bar in place rather than repainting under the cursor.
+  if (what === "progress" && betting.progress()) return;
+  season.repaint();
+});
+const betting = new BettingPanel(desk);
 /** Season arc (src/season/): while season.playing, startMatch runs its fixtures and match ends feed its table. */
-const season = new SeasonMode({
+const season: SeasonMode = new SeasonMode({
   roster,
   startMatch: () => startMatch(),
   ticker: (text, cls) => hud.ticker(text, cls),
@@ -187,6 +196,7 @@ const season = new SeasonMode({
   click: () => sound.uiClick(),
   onSeasonStart(s) {
     for (const e of s.entrants) if (e.owner) accounts.bumpDesigner(e.owner.id, { entered: 1 });
+    desk.start(s);
   },
   // Everything a recorded season match settles for the users goes here: designer prizes and career records.
   onResult(s, rec) {
@@ -198,8 +208,16 @@ const season = new SeasonMode({
     }
     const lines = paid.filter((p) => accounts.get(p.ownerId)).map((p) => `${accounts.nameOf(p.ownerId)} +${p.amount} (${p.bot})`);
     if (lines.length) hud.ticker(`Designer prize money: ${lines.join(" · ")}`, "season");
+    desk.onResult(s, rec);
+  },
+  onSeasonEnd: () => desk.end("the season was abandoned"),
+  betting: {
+    render: (s) => betting.render(s),
+    act: (act, id) => betting.act(act, id),
+    beforeFixture: (s, fixtureId) => desk.beforeFixture(s, fixtureId),
   },
 });
+desk.attach(season.state);
 
 /** Users (src/account/): one profile is both a bettor (wallet) and a bot designer (Garage, saved builds, record). */
 function syncAccount() {
