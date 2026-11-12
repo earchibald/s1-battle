@@ -6,7 +6,16 @@ browser (the Betting panel in the season hub), in the simulator, and as a local 
 
 This document says what the system is, why each piece is the way it is, and what the simulations show.
 
-RESULTS_SUMMARY
+**What the simulations show (36 seasons, 39,363 bets, 1.18 million credits staked, three pricing settings):**
+
+- No integrity failure of any kind: no audit or fairness violation, no invalid request accepted out of 16,488
+  sent by the fuzzer, no market past its loss bound, credits conserved in every season.
+- The house came out ahead on average at every setting and in 28 of 36 seasons, but a single season can lose:
+  the worst was −8,322 credits against a bank of 1,000,000.
+- A sharp syndicate that simulates more than the house made money at every setting (+5% to +13% on stakes).
+  The house's safeguards bound what it can take; they do not stop it.
+- Prices are calibrated: selections the model put near 47% won 45% to 49% of the time, and the model beats a
+  base-rate guess on Brier score (0.198 against 0.236).
 
 ## What you can bet on
 
@@ -125,7 +134,59 @@ The model is only right for the brain it simulates. Server seasons are played on
 the pricer uses. In the browser a match played in the arena on a different brain (Jev, the trained network) is
 priced on baseline behaviour, which is a known gap and a reason the local game is for fun rather than proof.
 
-RESULTS_DETAIL
+## What the simulations show
+
+`scripts/betting-sim.ts` plays whole seasons with a book against 40 simulated accounts (`punters.ts`), each
+starting a season with 1,000 credits: casual bettors, favourite and longshot backers, a fan of each bot,
+handicap players, a three-account **sharp** syndicate with its own better-sampled model that bets only where
+the offered price beats it, six **whale** accounts all backing the favourite at the maximum stake, and a
+**fuzzer** sending malformed, stale, duplicate and out-of-range requests. The audit runs after every betting
+window and the full verification at the end of every season.
+
+Twelve seasons at each of three pricing settings (run 2026-11-12):
+
+| | Default | No safety loading | Heavier pricing |
+| --- | --- | --- | --- |
+| Pool per fixture, `z` | 160, 0.5 | 160, 0 | 400, 1.0 |
+| Sharp's simulation budget | 3× the house | 3× | 1.5× |
+| Bets, credits staked | 13,111 · 379,029 | 15,537 · 445,566 | 10,715 · 355,659 |
+| House result per season, mean (sd) | +3,849 (3,549) | +2,603 (5,050) | +3,509 (3,695) |
+| Worst and best season | −2,966 · +8,958 | −8,322 · +10,350 | −2,417 · +8,751 |
+| Winning seasons | 10 of 12 | 9 of 12 | 9 of 12 |
+| Hold (house result / stakes) | 12.2% | 7.0% | 11.8% |
+| Sharp syndicate: staked, net, return | 52,909 · +3,145 · +5.9% | 104,149 · +4,744 · +4.6% | 21,770 · +2,887 · +13.3% |
+| Worst single market (its bound) | −1,918 (−3,000) | −2,732 (−6,000) | −2,190 (−3,000) |
+| Brier score (base-rate guess) | 0.199 (0.236) | 0.195 (0.236) | 0.198 (0.235) |
+| Audit / fairness violations | 0 | 0 | 0 |
+| Invalid requests accepted | 0 of 5,496 | 0 of 5,496 | 0 of 5,496 |
+| Markets over their loss bound | 0 | 0 | 0 |
+| Pricing cost per season (house) | 4,033 matches | 4,015 | 6,558 |
+
+How to read it:
+
+- **Integrity held everywhere.** This is the claim the system is built to make, and it is the one the evidence
+  supports without qualification.
+- **The house's profit is an average, not a guarantee.** The season-to-season spread is as large as the mean,
+  and two or three seasons in every dozen lost. Losses are small next to the bank: the worst season cost 0.8%
+  of it. What is guaranteed is the bound, not the sign.
+- **Twelve seasons is a small sample.** An earlier default run on the same twelve season seeds (before the
+  eliminations market was replaced) gave the house a 3.4% hold and the sharps +28%. Differences between the
+  three columns above are mostly noise; do not tune pricing from one run.
+- **Sharps win.** The engine is open and deterministic, so anyone can out-simulate a 160-sample pool. The
+  safety loading and heavier pricing shrink how often a sharp finds a bet (stakes fell from about 53,000 to
+  22,000) more than they shrink what it wins. The protection that holds is structural: the per-selection
+  liability cap, exposure shading and stake limits kept the syndicate to roughly 250 to 400 credits a season
+  while the rest of the crowd lost several thousand. If beating the bookmaker by doing the work is unwelcome
+  in a play-money game, the levers are a larger pool, a larger `z`, and lower caps on the handicap markets,
+  where most of the edge is found.
+- **Whales hit the caps, not the bank.** Six accounts at maximum stake on one selection drove it to its
+  liability cap in most matches and lost 11% to 23% of their stakes.
+- **Dead heats and pushes occur in practice** (95 dead-heat payouts and 5 pushes across the three runs) and
+  settle through the same audited path.
+
+The eliminations over/under market in the first draft was dropped: fights nearly always end with exactly three
+bots eliminated, so it had no price to offer. Fight length replaced it.
+
 
 ## Running it
 
