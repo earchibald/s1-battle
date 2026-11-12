@@ -1690,7 +1690,7 @@ export class Designer {
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = 0.01;
     this.pScene.add(ring);
-    this.pCamera.position.set(3.4, 2.6, 3.4);
+    this.pCamera.position.set(3.9, 3.0, 3.9); // far enough back that long rigs (saw disc, spinner bar, raised hammer) stay in frame
     this.pCamera.lookAt(0, 0.55, 0);
   }
 
@@ -1724,8 +1724,10 @@ export class Designer {
     const def = defFromBuild(cloneBuild(this.b));
     this.pBot = new Bot(def, { x: 0, y: 0 }, 0);
     this.pMesh = new BotMesh(this.pBot);
+    // Solid parts cast shadows; glows, flames, blur discs and floor markings (all transparent) must not.
     this.pMesh.group.traverse((o) => {
-      if ((o as THREE.Mesh).isMesh) o.castShadow = true;
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh) mesh.castShadow = !(mesh.material as THREE.Material).transparent;
     });
     this.pScene.add(this.pMesh.group);
   }

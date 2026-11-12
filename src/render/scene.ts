@@ -2,16 +2,56 @@ import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { ARENA, padCharge, padSinceFire, pitOpenAmount, pitPhase, sawRaise, shockCharge, shockPhase, ventLevel, ventPhase } from "../sim/arena";
 import type { Vec } from "../sim/math";
+import { ArenaDressing, floorTextures } from "./arenaDressing";
 
 /** sim (x, y) -> three (x, h, -y). Sim "north" (+y) is away from the camera. */
 export const toWorld = (p: Vec, h = 0) => new THREE.Vector3(p.x, h, -p.y);
 
+/** How strongly the room environment lights and reflects off everything (bots tune their materials against it). */
+export const ENV_INTENSITY = 0.55;
 /**
- * Everything static-ish in the arena: floor, walls, pit trapdoor, kill saws, stadium dressing,
+ * Linear HDR luminance a pixel needs before it blooms. Lit paint under the key tops out around 1.0–1.2, so
+ * only real emissives (emissiveIntensity ≳ 2.5–3 on a saturated color, or HDR basic colors) glow.
+ */
+export const BLOOM_THRESHOLD = 1.45;
+
+/** Vignette + gentle grade, applied in linear HDR before tone mapping. */
+const GradeShader = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    vignette: { value: 0.42 },
+    saturation: { value: 1.08 },
+    lift: { value: new THREE.Vector3(0.0015, 0.0025, 0.006) },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float vignette;
+    uniform float saturation;
+    uniform vec3 lift;
+    varying vec2 vUv;
+    void main() {
+      vec4 c = texture2D(tDiffuse, vUv);
+      float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
+      c.rgb = max(mix(vec3(l), c.rgb, saturation), 0.0);
+      c.rgb += lift * (1.0 - smoothstep(0.0, 0.25, l));
+      vec2 d = (vUv - 0.5) * vec2(1.0, 0.82);
+      c.rgb *= 1.0 - vignette * smoothstep(0.2, 0.75, length(d) * 1.3);
+      gl_FragColor = c;
+    }`,
+};
+
+/**
+ * Everything static-ish in the arena: floor, barrier, pit trapdoor, kill saws, traps, stadium dressing,
  * lights, post-processing, and the cinematic camera.
  */
 export class ArenaScene {
@@ -22,12 +62,15 @@ export class ArenaScene {
   readonly controls: OrbitControls;
   autoCamera = true;
 
-  private pitDoors: THREE.Mesh[] = [];
-  private pitGlow: THREE.Mesh;
-  private pitLight: THREE.PointLight;
+  private dressing: ArenaDressing;
+  private pitDoors: THREE.Group[] = [];
+  private pitGlow!: THREE.Mesh;
+  private pitLight!: THREE.PointLight;
+  private pitRim!: THREE.MeshStandardMaterial;
   private sawGroups: THREE.Group[] = [];
   private sawDiscs: THREE.Mesh[] = [];
   private sawLights: THREE.PointLight[] = [];
+  private sawSlotGlow: THREE.MeshBasicMaterial[] = [];
   private wallRail: THREE.MeshStandardMaterial;
   // traps
   private vents: { ring: THREE.MeshStandardMaterial; flame: THREE.Mesh; core: THREE.Mesh; light: THREE.PointLight }[] = [];
@@ -49,10 +92,16 @@ export class ArenaScene {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.1;
+    this.renderer.toneMappingExposure = 1.05;
 
-    this.scene.background = new THREE.Color(0x05060a);
-    this.scene.fog = new THREE.FogExp2(0x05060a, 0.012);
+    // Metals need something to reflect: a soft studio room, kept dim so the arena lights still lead.
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const env = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+    this.scene.environment = env;
+    this.scene.environmentIntensity = ENV_INTENSITY;
+    this.scene.background = this.backdrop();
+    this.scene.fog = new THREE.FogExp2(0x070910, 0.014);
 
     this.camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
     this.camera.position.set(0, 16, 24);
@@ -66,19 +115,20 @@ export class ArenaScene {
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.45, 0.4, 0.9);
+    // High threshold so only real emissives (rails, lenses, flames, arcs, visors) bloom, never lit paint or chrome.
+    const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.5, 0.45, BLOOM_THRESHOLD);
     this.composer.addPass(bloom);
+    this.composer.addPass(new ShaderPass(GradeShader));
     this.composer.addPass(new OutputPass());
 
     this.buildLights();
+    this.dressing = new ArenaDressing(env);
+    this.scene.add(this.dressing.group);
+    this.wallRail = this.dressing.railMat;
     this.buildFloor();
-    this.wallRail = this.buildWalls();
-    const pit = this.buildPit();
-    this.pitGlow = pit.glow;
-    this.pitLight = pit.light;
+    this.buildPit();
     this.buildSaws();
     this.buildTraps();
-    this.buildStadium();
     this.resize();
     window.addEventListener("resize", () => this.resize());
   }
@@ -92,277 +142,294 @@ export class ArenaScene {
     this.composer.setSize(w, h);
   }
 
+  /** A dark vertical gradient behind everything (only visible above the stands). */
+  private backdrop(): THREE.Texture {
+    const c = document.createElement("canvas");
+    c.width = 4;
+    c.height = 256;
+    const g = c.getContext("2d")!;
+    const grad = g.createLinearGradient(0, 0, 0, 256);
+    grad.addColorStop(0, "#0c1222");
+    grad.addColorStop(0.6, "#070910");
+    grad.addColorStop(1, "#030407");
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 4, 256);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  }
+
   private buildLights() {
-    this.scene.add(new THREE.HemisphereLight(0x6677bb, 0x101014, 0.9));
-    const key = new THREE.DirectionalLight(0xfff2e0, 2.2);
-    key.position.set(10, 22, 12);
+    // Low ambient: the environment map does most of the fill now.
+    this.scene.add(new THREE.HemisphereLight(0x8090c0, 0x0c0d12, 0.35));
+    // Overhead stadium key: near-vertical, neutral, the only shadow caster.
+    const key = new THREE.DirectionalLight(0xfff6ea, 2.2);
+    key.position.set(5, 26, 7);
     key.castShadow = true;
     key.shadow.mapSize.set(2048, 2048);
-    key.shadow.camera.left = -16;
-    key.shadow.camera.right = 16;
-    key.shadow.camera.top = 16;
-    key.shadow.camera.bottom = -16;
-    key.shadow.camera.near = 5;
-    key.shadow.camera.far = 60;
-    key.shadow.bias = -0.0008;
+    key.shadow.camera.left = -13;
+    key.shadow.camera.right = 13;
+    key.shadow.camera.top = 13;
+    key.shadow.camera.bottom = -13;
+    key.shadow.camera.near = 8;
+    key.shadow.camera.far = 45;
+    key.shadow.bias = -0.0006;
+    key.shadow.normalBias = 0.02;
+    key.shadow.radius = 3;
     this.scene.add(key);
-    const fill = new THREE.DirectionalLight(0x7fb0ff, 0.5);
-    fill.position.set(-14, 12, -8);
-    this.scene.add(fill);
-    // Stadium spots, colored for drama.
-    const spotColors = [0x66ccff, 0xff66aa, 0x66ccff, 0xff66aa];
+    // Colored rims from opposite low angles so silhouettes pick up a cyan / magenta edge.
+    const rimA = new THREE.DirectionalLight(0x66c8ff, 0.9);
+    rimA.position.set(-16, 7, -12);
+    const rimB = new THREE.DirectionalLight(0xff5aa8, 0.6);
+    rimB.position.set(16, 6, 12);
+    this.scene.add(rimA, rimB);
+    // Truss spots: soft pools of light on the floor, cool white.
     [
-      [-14, -14],
-      [14, -14],
-      [14, 14],
-      [-14, 14],
-    ].forEach(([x, z], i) => {
-      const s = new THREE.SpotLight(spotColors[i], 28, 60, 0.6, 0.6, 1.2);
-      s.position.set(x, 18, z);
-      s.target.position.set(0, 0, 0);
+      [-12, -12],
+      [12, -12],
+      [12, 12],
+      [-12, 12],
+    ].forEach(([x, z]) => {
+      const s = new THREE.SpotLight(0xdfe8ff, 22, 50, 0.55, 0.75, 1.2);
+      s.position.set(x, 16, z);
+      s.target.position.set(x * 0.25, 0, z * 0.25);
       this.scene.add(s, s.target);
     });
   }
 
-  private floorTexture(): THREE.CanvasTexture {
-    const size = 1024;
-    const c = document.createElement("canvas");
-    c.width = c.height = size;
-    const g = c.getContext("2d")!;
-    const px = size / (ARENA.half * 2);
-    g.fillStyle = "#1b1e24";
-    g.fillRect(0, 0, size, size);
-    // Plate seams
-    const plate = size / 11;
-    for (let i = 0; i <= 11; i++) {
-      g.strokeStyle = "rgba(0,0,0,0.55)";
-      g.lineWidth = 3;
-      g.beginPath();
-      g.moveTo(i * plate, 0);
-      g.lineTo(i * plate, size);
-      g.moveTo(0, i * plate);
-      g.lineTo(size, i * plate);
-      g.stroke();
-      g.strokeStyle = "rgba(255,255,255,0.05)";
-      g.lineWidth = 1;
-      g.beginPath();
-      g.moveTo(i * plate + 2, 0);
-      g.lineTo(i * plate + 2, size);
-      g.moveTo(0, i * plate + 2);
-      g.lineTo(size, i * plate + 2);
-      g.stroke();
-    }
-    // Scuffs
-    for (let i = 0; i < 900; i++) {
-      g.fillStyle = `rgba(${120 + Math.random() * 60},${120 + Math.random() * 60},${130 + Math.random() * 60},${Math.random() * 0.08})`;
-      const x = Math.random() * size;
-      const y = Math.random() * size;
-      g.fillRect(x, y, Math.random() * 40, 1 + Math.random() * 2);
-    }
-    // Center ring + logo
-    g.strokeStyle = "rgba(90,200,255,0.35)";
-    g.lineWidth = 6;
-    g.beginPath();
-    g.arc(size / 2, size / 2, 3.2 * px, 0, Math.PI * 2);
-    g.stroke();
-    g.fillStyle = "rgba(90,200,255,0.5)";
-    g.font = `bold ${Math.round(px * 1.1)}px "Inter", system-ui, sans-serif`;
-    g.textAlign = "center";
-    g.textBaseline = "middle";
-    g.save();
-    g.translate(size / 2, size / 2);
-    g.fillText("S1 ARENA", 0, 0);
-    g.restore();
-    // Hazard stripes around pit and saw slots
-    const stripes = (cx: number, cy: number, hw: number, hh: number) => {
-      const x0 = (cx - hw + ARENA.half) * px;
-      const y0 = (ARENA.half - (cy + hh)) * px;
-      const w = hw * 2 * px;
-      const h = hh * 2 * px;
-      g.save();
-      g.beginPath();
-      g.rect(x0 - 18, y0 - 18, w + 36, h + 36);
-      g.rect(x0, y0, w, h);
-      g.clip("evenodd");
-      for (let i = -size; i < size * 2; i += 28) {
-        g.fillStyle = i % 56 === 0 ? "#f2c230" : "#1a1a1a";
-        g.beginPath();
-        g.moveTo(i, 0);
-        g.lineTo(i + 28, 0);
-        g.lineTo(i + 28 - size, size);
-        g.lineTo(i - size, size);
-        g.fill();
-      }
-      g.restore();
-    };
-    stripes(ARENA.pit.center.x, ARENA.pit.center.y, ARENA.pit.half, ARENA.pit.half);
-    for (const s of ARENA.saws.slots) stripes(s.center.x, s.center.y, s.halfX, s.halfY);
-    // Traps: stripes round the launch pad, scorched rings round the vents, a blue border round each shock plate.
-    stripes(ARENA.pad.center.x, ARENA.pad.center.y, ARENA.pad.half, ARENA.pad.half);
-    const fx = (x: number) => (x + ARENA.half) * px;
-    const fy = (y: number) => (ARENA.half - y) * px;
-    for (const v of ARENA.vents.slots) {
-      const r = ARENA.vents.radius * px;
-      const scorch = g.createRadialGradient(fx(v.x), fy(v.y), r * 0.6, fx(v.x), fy(v.y), r * 1.9);
-      scorch.addColorStop(0, "rgba(0,0,0,0.75)");
-      scorch.addColorStop(1, "rgba(0,0,0,0)");
-      g.fillStyle = scorch;
-      g.beginPath();
-      g.arc(fx(v.x), fy(v.y), r * 1.9, 0, Math.PI * 2);
-      g.fill();
-      g.strokeStyle = "rgba(255,122,26,0.8)";
-      g.lineWidth = 4;
-      g.setLineDash([10, 8]);
-      g.beginPath();
-      g.arc(fx(v.x), fy(v.y), r + 6, 0, Math.PI * 2);
-      g.stroke();
-      g.setLineDash([]);
-    }
-    for (const sp of ARENA.shock.plates) {
-      const h = ARENA.shock.half * px;
-      g.strokeStyle = "rgba(102,221,255,0.85)";
-      g.lineWidth = 5;
-      g.strokeRect(fx(sp.center.x) - h - 6, fy(sp.center.y) - h - 6, h * 2 + 12, h * 2 + 12);
-    }
-    const tex = new THREE.CanvasTexture(c);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = 8;
-    return tex;
-  }
-
+  /** Floor plane with real openings for the pit and the saw slots (local plane coords = sim coords). */
   private buildFloor() {
-    const tex = this.floorTexture();
-    const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(ARENA.half * 2, ARENA.half * 2),
-      new THREE.MeshStandardMaterial({ map: tex, roughness: 0.62, metalness: 0.55 }),
-    );
+    const H = ARENA.half;
+    const rectPath = (cx: number, cy: number, hx: number, hy: number) => {
+      const p = new THREE.Path();
+      p.moveTo(cx - hx, cy - hy);
+      p.lineTo(cx - hx, cy + hy);
+      p.lineTo(cx + hx, cy + hy);
+      p.lineTo(cx + hx, cy - hy);
+      p.lineTo(cx - hx, cy - hy);
+      return p;
+    };
+    const shape = new THREE.Shape();
+    shape.moveTo(-H, -H);
+    shape.lineTo(H, -H);
+    shape.lineTo(H, H);
+    shape.lineTo(-H, H);
+    shape.lineTo(-H, -H);
+    shape.holes.push(rectPath(ARENA.pit.center.x, ARENA.pit.center.y, ARENA.pit.half, ARENA.pit.half));
+    for (const s of ARENA.saws.slots) shape.holes.push(rectPath(s.center.x, s.center.y, s.halfX, s.halfY));
+    const geo = new THREE.ShapeGeometry(shape);
+    const pos = geo.getAttribute("position") as THREE.BufferAttribute;
+    const uv = geo.getAttribute("uv") as THREE.BufferAttribute;
+    for (let i = 0; i < pos.count; i++) uv.setXY(i, (pos.getX(i) + H) / (2 * H), (pos.getY(i) + H) / (2 * H));
+    const { map, rough } = floorTextures();
+    // The floor reflects a dimmer room than the bots so it stays a mid-dark stage they read against.
+    const floorMat = new THREE.MeshStandardMaterial({ map, roughnessMap: rough, roughness: 1, metalness: 0.35 });
+    floorMat.envMap = this.scene.environment;
+    floorMat.envMapIntensity = 0.22;
+    const floor = new THREE.Mesh(geo, floorMat);
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
     this.scene.add(floor);
-    const outer = new THREE.Mesh(
-      new THREE.PlaneGeometry(120, 120),
-      new THREE.MeshStandardMaterial({ color: 0x0b0d12, roughness: 0.95, metalness: 0.1 }),
-    );
+
+    // Concourse floor outside the barrier (with the arena cut out so the pit stays open underneath).
+    const outerShape = new THREE.Shape();
+    outerShape.moveTo(-40, -40);
+    outerShape.lineTo(40, -40);
+    outerShape.lineTo(40, 40);
+    outerShape.lineTo(-40, 40);
+    outerShape.lineTo(-40, -40);
+    outerShape.holes.push(rectPath(0, 0, H, H));
+    const outer = new THREE.Mesh(new THREE.ShapeGeometry(outerShape), new THREE.MeshStandardMaterial({ color: 0x0a0b0f, roughness: 0.95, metalness: 0.1 }));
     outer.rotation.x = -Math.PI / 2;
-    outer.position.y = -0.02;
+    outer.position.y = -0.01;
     outer.receiveShadow = true;
     this.scene.add(outer);
   }
 
-  private buildWalls(): THREE.MeshStandardMaterial {
-    const H = ARENA.half;
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0x2a2e36, roughness: 0.5, metalness: 0.7 });
-    const glassMat = new THREE.MeshPhysicalMaterial({
-      color: 0x8ab6ff,
-      transmission: 0.85,
-      opacity: 0.35,
-      transparent: true,
-      roughness: 0.1,
-      metalness: 0,
-      thickness: 0.2,
-    });
-    const railMat = new THREE.MeshStandardMaterial({ color: 0x0b2b36, emissive: 0x33ccff, emissiveIntensity: 1.6 });
-    const t = 0.35;
-    const h = ARENA.wallHeight;
-    const segs: [number, number, number, number][] = [
-      [0, -H - t / 2, H * 2 + t * 2, t],
-      [0, H + t / 2, H * 2 + t * 2, t],
-      [-H - t / 2, 0, t, H * 2],
-      [H + t / 2, 0, t, H * 2],
-    ];
-    for (const [x, z, w, d] of segs) {
-      const base = new THREE.Mesh(new THREE.BoxGeometry(w, h * 0.45, d), wallMat);
-      base.position.set(x, h * 0.225, z);
-      base.castShadow = true;
-      base.receiveShadow = true;
-      this.scene.add(base);
-      const glass = new THREE.Mesh(new THREE.BoxGeometry(w, h * 1.3, d * 0.3), glassMat);
-      glass.position.set(x, h * 0.45 + h * 0.65, z);
-      this.scene.add(glass);
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(w, 0.08, d * 0.5), railMat);
-      rail.position.set(x, h * 0.45 + 0.04, z);
-      this.scene.add(rail);
+  /** Paint for a sunk shaft: hazard band at the lip, grimy walls fading into black. */
+  private shaftTexture(tint: string): THREE.CanvasTexture {
+    const c = document.createElement("canvas");
+    c.width = 256;
+    c.height = 256;
+    const g = c.getContext("2d")!;
+    const grad = g.createLinearGradient(0, 0, 0, 256);
+    grad.addColorStop(0, tint);
+    grad.addColorStop(0.55, "#0b0706");
+    grad.addColorStop(1, "#000000");
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 256, 256);
+    g.fillStyle = "#d9a628";
+    for (let i = -64; i < 320; i += 32) {
+      g.beginPath();
+      g.moveTo(i, 28);
+      g.lineTo(i + 16, 28);
+      g.lineTo(i + 30, 0);
+      g.lineTo(i + 14, 0);
+      g.fill();
     }
-    const pillarGeo = new THREE.CylinderGeometry(0.35, 0.45, h * 1.9, 12);
-    for (const [x, z] of [
-      [-H, -H],
-      [H, -H],
-      [H, H],
-      [-H, H],
-    ]) {
-      const p = new THREE.Mesh(pillarGeo, wallMat);
-      p.position.set(x, h * 0.95, z);
-      p.castShadow = true;
-      this.scene.add(p);
-      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.28, 12, 8), new THREE.MeshStandardMaterial({ color: 0x331111, emissive: 0xff3344, emissiveIntensity: 2 }));
-      cap.position.set(x, h * 1.9 + 0.2, z);
-      this.scene.add(cap);
+    for (let i = 0; i < 40; i++) {
+      g.fillStyle = `rgba(0,0,0,${0.2 + Math.random() * 0.4})`;
+      g.fillRect(Math.random() * 256, 28 + Math.random() * 120, 1 + Math.random() * 3, 20 + Math.random() * 80);
     }
-    return railMat;
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
   }
 
   private buildPit() {
     const { center, half } = ARENA.pit;
     const c = toWorld(center);
     const depth = 3;
-    const hole = new THREE.Mesh(
-      new THREE.BoxGeometry(half * 2, depth, half * 2),
-      new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 1, side: THREE.BackSide }),
-    );
-    hole.position.set(c.x, -depth / 2 - 0.01, c.z);
+    // Shaft: painted inner walls (BackSide so we see them from above), dark floor.
+    const wallMat = new THREE.MeshStandardMaterial({ map: this.shaftTexture("#3a1810"), roughness: 0.9, metalness: 0.2, side: THREE.BackSide });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x050303, roughness: 1, side: THREE.BackSide });
+    const hole = new THREE.Mesh(new THREE.BoxGeometry(half * 2, depth, half * 2), [wallMat, wallMat, dark, dark, wallMat, wallMat]);
+    hole.position.set(c.x, -depth / 2 - 0.005, c.z);
     this.scene.add(hole);
+    // Glow at the bottom: a hot radial core.
+    const gc = document.createElement("canvas");
+    gc.width = gc.height = 128;
+    const gg = gc.getContext("2d")!;
+    const rg = gg.createRadialGradient(64, 64, 4, 64, 64, 64);
+    rg.addColorStop(0, "rgba(255,200,120,1)");
+    rg.addColorStop(0.35, "rgba(255,60,20,0.9)");
+    rg.addColorStop(1, "rgba(120,0,0,0.25)");
+    gg.fillStyle = rg;
+    gg.fillRect(0, 0, 128, 128);
     const glow = new THREE.Mesh(
-      new THREE.PlaneGeometry(half * 2 - 0.2, half * 2 - 0.2),
-      new THREE.MeshBasicMaterial({ color: 0xff2a1a, transparent: true, opacity: 0.0 }),
+      new THREE.PlaneGeometry(half * 2 - 0.05, half * 2 - 0.05),
+      new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(gc), color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }),
     );
     glow.rotation.x = -Math.PI / 2;
     glow.position.set(c.x, -depth + 0.05, c.z);
     this.scene.add(glow);
     const light = new THREE.PointLight(0xff3020, 0, 10, 1.5);
-    light.position.set(c.x, -0.4, c.z);
+    light.position.set(c.x, -0.6, c.z);
     this.scene.add(light);
-    const doorMat = new THREE.MeshStandardMaterial({ color: 0x3a3f48, roughness: 0.45, metalness: 0.8 });
+
+    // Trapdoors: two leaves hinged at their outer edges, flush with the floor, that swing down into the shaft.
+    const dc = document.createElement("canvas");
+    dc.width = 256;
+    dc.height = 512;
+    const dg = dc.getContext("2d")!;
+    dg.fillStyle = "#2c3038";
+    dg.fillRect(0, 0, 256, 512);
+    dg.save();
+    dg.globalAlpha = 0.5;
+    dg.fillStyle = "#b8871e";
+    for (let i = -512; i < 768; i += 64) {
+      dg.beginPath();
+      dg.moveTo(i, 512);
+      dg.lineTo(i + 32, 512);
+      dg.lineTo(i + 32 + 512, 0);
+      dg.lineTo(i + 512, 0);
+      dg.fill();
+    }
+    dg.restore();
+    dg.strokeStyle = "rgba(0,0,0,0.6)";
+    dg.lineWidth = 10;
+    dg.strokeRect(5, 5, 246, 502);
+    dg.fillStyle = "#6a707b";
+    for (const [x, y] of [
+      [20, 20],
+      [236, 20],
+      [20, 492],
+      [236, 492],
+      [20, 256],
+      [236, 256],
+    ]) {
+      dg.beginPath();
+      dg.arc(x, y, 7, 0, Math.PI * 2);
+      dg.fill();
+    }
+    const doorTex = new THREE.CanvasTexture(dc);
+    doorTex.colorSpace = THREE.SRGBColorSpace;
+    const doorMat = new THREE.MeshStandardMaterial({ map: doorTex, roughness: 0.5, metalness: 0.7 });
     for (const side of [-1, 1]) {
-      const door = new THREE.Mesh(new THREE.BoxGeometry(half, 0.12, half * 2), doorMat);
-      door.position.set(c.x + (side * half) / 2, 0.06, c.z);
+      const hinge = new THREE.Group();
+      hinge.position.set(c.x + side * half, 0, c.z);
+      const door = new THREE.Mesh(new THREE.BoxGeometry(half - 0.03, 0.1, half * 2 - 0.04), doorMat);
+      door.position.set((-side * half) / 2, -0.05, 0);
       door.castShadow = true;
       door.receiveShadow = true;
-      door.userData.side = side;
-      this.scene.add(door);
-      this.pitDoors.push(door);
+      hinge.add(door);
+      hinge.userData.side = side;
+      this.scene.add(hinge);
+      this.pitDoors.push(hinge);
     }
-    const rimMat = new THREE.MeshStandardMaterial({ color: 0x331008, emissive: 0xff4422, emissiveIntensity: 0.4 });
-    const rim = new THREE.Mesh(new THREE.BoxGeometry(half * 2 + 0.3, 0.05, half * 2 + 0.3), rimMat);
-    rim.position.set(c.x, 0.025, c.z);
-    this.scene.add(rim);
+    // Lip: a steel frame round the opening that glows red when live.
+    this.pitRim = new THREE.MeshStandardMaterial({ color: 0x2a0c06, emissive: 0xff3a1a, emissiveIntensity: 0.4, roughness: 0.5, metalness: 0.6 });
+    const t = 0.08;
+    for (const [x, z, w, d] of [
+      [0, -half - t / 2, half * 2 + t * 2, t],
+      [0, half + t / 2, half * 2 + t * 2, t],
+      [-half - t / 2, 0, t, half * 2],
+      [half + t / 2, 0, t, half * 2],
+    ]) {
+      const lip = new THREE.Mesh(new THREE.BoxGeometry(w, 0.04, d), this.pitRim);
+      lip.position.set(c.x + x, 0.02, c.z + z);
+      this.scene.add(lip);
+    }
     this.pitGlow = glow;
     this.pitLight = light;
-    (this as unknown as { pitRim: THREE.MeshStandardMaterial }).pitRim = rimMat;
-    return { glow, light };
   }
 
   private buildSaws() {
-    const bladeMat = new THREE.MeshStandardMaterial({ color: 0x7d838e, roughness: 0.45, metalness: 0.9 });
-    const grateMat = new THREE.MeshStandardMaterial({ color: 0x0c0d10, roughness: 0.9, metalness: 0.3 });
+    const bladeMat = new THREE.MeshStandardMaterial({ color: 0x9aa1ad, roughness: 0.3, metalness: 0.95 });
+    const steel = new THREE.MeshStandardMaterial({ color: 0x3a3f48, roughness: 0.45, metalness: 0.85 });
+    const shaftMat = new THREE.MeshStandardMaterial({ map: this.shaftTexture("#2a1a0c"), roughness: 0.9, metalness: 0.3, side: THREE.BackSide });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x050403, roughness: 1, side: THREE.BackSide });
+    // One merged blade (disc + hub + teeth) lying in the y-z plane, spun about x.
+    const parts: THREE.BufferGeometry[] = [new THREE.CylinderGeometry(0.72, 0.72, 0.06, 32).rotateZ(Math.PI / 2), new THREE.CylinderGeometry(0.16, 0.16, 0.12, 12).rotateZ(Math.PI / 2)];
+    for (let t = 0; t < 14; t++) {
+      const a = (t / 14) * Math.PI * 2;
+      // a raked tooth: a wedge-ish box tangent to the rim
+      parts.push(new THREE.BoxGeometry(0.07, 0.2, 0.13).rotateX(-a + 0.35).translate(0, Math.cos(a) * 0.76, Math.sin(a) * 0.76));
+    }
+    const bladeGeo = mergeGeometries(parts.map((g) => g.toNonIndexed()));
     for (const s of ARENA.saws.slots) {
       const c = toWorld(s.center);
-      const grate = new THREE.Mesh(new THREE.BoxGeometry(s.halfX * 2, 0.04, s.halfY * 2), grateMat);
-      grate.position.set(c.x, 0.02, c.z);
+      const depth = 2;
+      const shaft = new THREE.Mesh(new THREE.BoxGeometry(s.halfX * 2, depth, s.halfY * 2), [shaftMat, shaftMat, dark, dark, shaftMat, shaftMat]);
+      shaft.position.set(c.x, -depth / 2 - 0.005, c.z);
+      this.scene.add(shaft);
+      // Grate: cross bars either side of a center gap the blades come up through, plus the long rails.
+      const gap = 0.13;
+      const bars: THREE.BufferGeometry[] = [];
+      const n = Math.floor((s.halfY * 2) / 0.32);
+      for (let i = 0; i <= n; i++) {
+        const z = -s.halfY + 0.08 + (i * (s.halfY * 2 - 0.16)) / n;
+        for (const side of [-1, 1]) {
+          const len = s.halfX - gap;
+          const b = new THREE.BoxGeometry(len, 0.05, 0.06);
+          b.translate(side * (gap + len / 2), -0.03, z);
+          bars.push(b);
+        }
+      }
+      for (const side of [-1, 1]) {
+        const rail = new THREE.BoxGeometry(0.06, 0.07, s.halfY * 2);
+        rail.translate(side * gap, -0.04, 0);
+        bars.push(rail);
+      }
+      const grate = new THREE.Mesh(mergeGeometries(bars), steel);
+      grate.position.set(c.x, 0, c.z);
+      grate.receiveShadow = true;
       this.scene.add(grate);
+      // A warm glow line in the gap while the saws are up.
+      const glowMat = new THREE.MeshBasicMaterial({ color: 0xff8a2a, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+      glowMat.color.multiplyScalar(2);
+      const glow = new THREE.Mesh(new THREE.PlaneGeometry(gap * 2, s.halfY * 2), glowMat);
+      glow.rotation.x = -Math.PI / 2;
+      glow.position.set(c.x, -0.25, c.z);
+      this.scene.add(glow);
+      this.sawSlotGlow.push(glowMat);
+
       const group = new THREE.Group();
       group.position.set(c.x, -0.9, c.z);
       for (let i = 0; i < 4; i++) {
-        const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.72, 0.06, 28), bladeMat);
-        disc.rotation.z = Math.PI / 2; // axis along x, blade lies in the y-z plane along the slot
+        const disc = new THREE.Mesh(bladeGeo, bladeMat);
         disc.position.set(0, 0, -s.halfY + 0.8 + i * ((s.halfY * 2 - 1.6) / 3));
-        // teeth
-        for (let t = 0; t < 14; t++) {
-          const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.18, 0.14), bladeMat);
-          const a = (t / 14) * Math.PI * 2;
-          tooth.position.set(0, Math.cos(a) * 0.78, Math.sin(a) * 0.78);
-          tooth.rotation.x = -a;
-          disc.add(tooth);
-        }
+        disc.castShadow = true;
         group.add(disc);
         this.sawDiscs.push(disc);
       }
@@ -380,25 +447,32 @@ export class ArenaScene {
     // --- Flame vents: a grate, a ring that glows as a warning, and a flame cone that grows when lit.
     const grateMat = new THREE.MeshStandardMaterial({ color: 0x0c0d10, roughness: 0.9, metalness: 0.4 });
     const V = ARENA.vents;
+    const barMat = new THREE.MeshStandardMaterial({ color: 0x3a3f48, roughness: 0.5, metalness: 0.8 });
     for (const slot of V.slots) {
       const c = toWorld(slot);
       const grate = new THREE.Mesh(new THREE.CylinderGeometry(V.radius, V.radius, 0.04, 28), grateMat);
       grate.position.set(c.x, 0.02, c.z);
       grate.receiveShadow = true;
       this.scene.add(grate);
+      const ventBars: THREE.BufferGeometry[] = [];
       for (let i = -2; i <= 2; i++) {
         const w = Math.sqrt(Math.max(0.01, V.radius * V.radius - (i * 0.3) ** 2)) * 2 - 0.1;
-        const bar = new THREE.Mesh(new THREE.BoxGeometry(w, 0.03, 0.07), new THREE.MeshStandardMaterial({ color: 0x3a3f48, roughness: 0.5, metalness: 0.8 }));
-        bar.position.set(c.x, 0.05, c.z + i * 0.3);
-        this.scene.add(bar);
+        ventBars.push(new THREE.BoxGeometry(w, 0.03, 0.07).translate(0, 0, i * 0.3));
       }
+      const bars = new THREE.Mesh(mergeGeometries(ventBars), barMat);
+      bars.position.set(c.x, 0.05, c.z);
+      this.scene.add(bars);
       const ringMat = new THREE.MeshStandardMaterial({ color: 0x2a1206, emissive: 0xff6a1a, emissiveIntensity: 0.25 });
       const ring = new THREE.Mesh(new THREE.TorusGeometry(V.radius, 0.06, 8, 36), ringMat);
       ring.rotation.x = Math.PI / 2;
       ring.position.set(c.x, 0.05, c.z);
       this.scene.add(ring);
-      const flameMat = (color: number, opacity: number) =>
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+      // HDR colors (×2) so the flames clear the bloom threshold.
+      const flameMat = (color: number, opacity: number) => {
+        const m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+        m.color.multiplyScalar(2);
+        return m;
+      };
       const flame = new THREE.Mesh(new THREE.ConeGeometry(V.radius * 0.8, 1, 18, 1, true), flameMat(0xff5a12, 0.7));
       const core = new THREE.Mesh(new THREE.ConeGeometry(V.radius * 0.42, 1, 12, 1, true), flameMat(0xffe08a, 0.85));
       flame.position.set(c.x, 0, c.z);
@@ -442,6 +516,7 @@ export class ArenaScene {
     }
     const arrowTex = new THREE.CanvasTexture(ac);
     this.padArrows = new THREE.MeshBasicMaterial({ map: arrowTex, color: 0xffd166, transparent: true, opacity: 0.35, depthWrite: false });
+    this.padArrows.color.multiplyScalar(1.8);
     const arrows = new THREE.Mesh(new THREE.PlaneGeometry(P.half * 2 - 0.2, P.half * 2 - 0.2), this.padArrows);
     arrows.rotation.x = -Math.PI / 2;
     arrows.position.set(0, 0.104, -P.half);
@@ -475,6 +550,7 @@ export class ArenaScene {
       panel.receiveShadow = true;
       this.scene.add(panel);
       const grid = new THREE.MeshBasicMaterial({ map: gridTex, color: 0x66ddff, transparent: true, opacity: 0.18, blending: THREE.AdditiveBlending, depthWrite: false });
+      grid.color.multiplyScalar(2.2);
       const gridMesh = new THREE.Mesh(new THREE.PlaneGeometry(S.half * 2, S.half * 2), grid);
       gridMesh.rotation.x = -Math.PI / 2;
       gridMesh.position.set(c.x, 0.056, c.z);
@@ -514,7 +590,7 @@ export class ArenaScene {
       const phase = ventPhase(i, t);
       const level = ventLevel(i, t);
       const blink = Math.sin(t * 22) > 0 ? 1 : 0.3;
-      v.ring.emissiveIntensity = phase === "erupting" ? 4 : phase === "warning" ? 0.6 + blink * 2.4 : 0.25;
+      v.ring.emissiveIntensity = phase === "erupting" ? 9 : phase === "warning" ? 0.8 + blink * 6 : 0.35;
       const lit = level > 0.01;
       v.flame.visible = v.core.visible = lit;
       if (lit) {
@@ -543,8 +619,8 @@ export class ArenaScene {
       const phase = shockPhase(i, t);
       const c = shockCharge(i, t);
       const live = phase === "live";
-      sp.grid.opacity = live ? 1 : 0.18 + c * 0.6;
-      sp.posts.emissiveIntensity = live ? 6 : 0.3 + c * 3;
+      sp.grid.opacity = live ? 1 : 0.1 + c * 0.45;
+      sp.posts.emissiveIntensity = live ? 14 : 0.5 + c * 6;
       sp.light.intensity = live ? 45 : c * 7;
       const n = live ? sp.arcs.length : phase === "charging" ? 1 + Math.floor(c * 3) : 0;
       const half = ARENA.shock.half;
@@ -565,47 +641,21 @@ export class ArenaScene {
     });
   }
 
-  private buildStadium() {
-    // A ring of light panels around the arena to give the bloom something to chew on.
-    const n = 36;
-    const r = 19;
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2;
-      const hue = i % 2 === 0 ? 0x1f6fff : 0xff2d7a;
-      const m = new THREE.Mesh(
-        new THREE.BoxGeometry(2.2, 0.5, 0.2),
-        new THREE.MeshStandardMaterial({ color: 0x111111, emissive: hue, emissiveIntensity: 0.9 }),
-      );
-      m.position.set(Math.cos(a) * r, 0.5 + Math.sin(i * 1.7) * 0.15, Math.sin(a) * r);
-      m.lookAt(0, 0.9, 0);
-      this.scene.add(m);
-      const stand = new THREE.Mesh(
-        new THREE.BoxGeometry(2.4, 2.0, 1.2),
-        new THREE.MeshStandardMaterial({ color: 0x15171c, roughness: 0.9 }),
-      );
-      stand.position.set(Math.cos(a) * (r + 1.2), 1.0, Math.sin(a) * (r + 1.2));
-      stand.lookAt(0, 1.0, 0);
-      this.scene.add(stand);
-    }
-  }
-
-  /** Big hits shake the camera. */
+  /** Big hits shake the camera (and get the crowd on its feet). */
   kick(amount: number) {
     this.shake = Math.min(1.2, this.shake + amount);
+    this.dressing.cheer(amount);
   }
 
   updateArena(fightTime: number, dt: number) {
-    // Pit doors slide open/closed; the hole glows when live.
+    // Pit doors swing down into the shaft; the hole glows when live.
     const open = pitOpenAmount(fightTime);
     const phase = pitPhase(fightTime);
-    for (const d of this.pitDoors) {
-      const side = d.userData.side as number;
-      d.position.x = ARENA.pit.center.x + (side * ARENA.pit.half) / 2 + side * open * (ARENA.pit.half + 0.1);
-    }
+    const swing = open * 1.72;
+    for (const d of this.pitDoors) d.rotation.z = (d.userData.side as number) * swing;
     const warn = phase === "warning" ? (Math.sin(fightTime * 12) > 0 ? 1 : 0.2) : 0;
-    const rim = (this as unknown as { pitRim: THREE.MeshStandardMaterial }).pitRim;
-    rim.emissiveIntensity = phase === "open" ? 2.2 : 0.4 + warn * 1.8;
-    (this.pitGlow.material as THREE.MeshBasicMaterial).opacity = open * 0.8;
+    this.pitRim.emissiveIntensity = phase === "open" ? 6 + Math.sin(fightTime * 6) * 1.2 : 0.5 + warn * 6;
+    (this.pitGlow.material as THREE.MeshBasicMaterial).opacity = open;
     this.pitLight.intensity = open * 40;
 
     // Saws rise, spin, and glow.
@@ -613,7 +663,9 @@ export class ArenaScene {
     for (const g of this.sawGroups) g.position.y = -0.95 + raise * 1.3;
     for (const d of this.sawDiscs) d.rotation.x += dt * (6 + raise * 30);
     for (const l of this.sawLights) l.intensity = raise * 5;
-    this.wallRail.emissiveIntensity = 1.3 + Math.sin(fightTime * 2) * 0.3;
+    for (const m of this.sawSlotGlow) m.opacity = raise * 0.9;
+    this.wallRail.emissiveIntensity = 2.3 + Math.sin(fightTime * 2) * 0.35;
+    this.dressing.update(fightTime, dt, phase === "open" ? 2 : phase === "warning" ? 1 : 0);
     this.updateTraps(fightTime);
   }
 

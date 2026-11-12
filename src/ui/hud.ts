@@ -70,8 +70,14 @@ export const maneuverLabel = (m: Maneuver) => MANEUVER_LABEL[m] ?? m.toUpperCase
 interface Card {
   root: HTMLElement;
   hp: HTMLElement;
+  /** The "recent damage" ghost behind the HP fill: holds for a beat after a hit, then drains. */
+  hpChip: HTMLElement;
   hpText: HTMLElement;
   charge: HTMLElement;
+  chargeLabel: HTMLElement;
+  /** HP fraction the chip segment is showing, and when it may start draining. */
+  lag: number;
+  lagHoldUntil: number;
   status: HTMLElement;
   brain: HTMLButtonElement;
   maneuver: HTMLElement;
@@ -111,6 +117,8 @@ export class Hud {
   private jevInfo: JevInfo = { configured: false, model: "" };
   private world: World | null = null;
   private newsEl: HTMLElement;
+  /** The match whose result card is currently built. */
+  private resultFor: World | null = null;
   /** Every thought and commentary line of the session, browsable; a tab in the lower right until opened. */
   readonly log: EventLog;
   /** Replaces "MATCH n" in the top bar (season fixtures name themselves). */
@@ -191,8 +199,8 @@ export class Hud {
         <div class="card-title"><div class="card-name">${bot.id}</div><div class="card-weapon">${bot.def.weapon} · ${bot.def.build.levels.armor ? bot.def.build.levels.armor * 9 + "% armor" : "no armor"}</div></div>
         <button class="brain-toggle" title="Toggle this bot's brain"></button>
       </div>
-      <div class="bar hp"><div class="fill"></div><span class="bar-text"></span></div>
-      <div class="bar charge"><div class="fill"></div></div>
+      <div class="bar hp"><div class="chip"></div><div class="fill"></div><span class="bar-text"></span></div>
+      <div class="charge-row"><div class="bar charge"><div class="fill"></div></div><span class="charge-label"></span></div>
       <div class="card-status"></div>
       <div class="decision">
         <div class="decision-main"><span class="maneuver"></span><span class="target"></span></div>
@@ -204,8 +212,12 @@ export class Hud {
     c = {
       root,
       hp: root.querySelector(".hp .fill")!,
+      hpChip: root.querySelector(".hp .chip")!,
       hpText: root.querySelector(".hp .bar-text")!,
       charge: root.querySelector(".charge .fill")!,
+      chargeLabel: root.querySelector(".charge-label")!,
+      lag: bot.hpFrac,
+      lagHoldUntil: 0,
       status: root.querySelector(".card-status")!,
       brain: root.querySelector(".brain-toggle")!,
       maneuver: root.querySelector(".maneuver")!,
@@ -228,7 +240,7 @@ export class Hud {
     if (entry.cat === "thought") return;
     const line = document.createElement("div");
     line.className = `line ${cls}`;
-    line.textContent = text;
+    appendWithBots(line, text, this.botColors());
     this.tickerEl.appendChild(line);
     while (this.tickerEl.children.length > 5) this.tickerEl.firstElementChild?.remove();
     setTimeout(() => line.classList.add("fade"), 7000);
@@ -237,6 +249,13 @@ export class Hud {
   /** A bot's decision, for the event log only: "FLANK → CLAMP" plus the brain's full note. */
   thought(botId: string, text: string, detail: string, source: string) {
     this.log.add({ cat: "thought", cls: source === "jev" ? "jev" : source === "trained" ? "net" : "base", text, detail, bots: [botId], source });
+  }
+
+  /** Callsign -> CSS colour for the bots in the current match. */
+  private botColors(): Map<string, string> {
+    const m = new Map<string, string>();
+    for (const b of this.world?.bots ?? []) m.set(b.id, hex(b.def.color));
+    return m;
   }
 
   private logClock() {
@@ -332,11 +351,20 @@ export class Hud {
       const brain = brains.get(bot.id);
       c.root.classList.toggle("dead", !bot.alive);
       c.root.classList.toggle("danger", bot.alive && bot.intent.danger > 0.65);
-      c.hp.style.width = `${bot.hpFrac * 100}%`;
-      c.hp.style.background = `hsl(${bot.hpFrac * 120}, 90%, 55%)`;
-      c.hpText.textContent = bot.alive ? `${Math.ceil(bot.hp)} / ${bot.def.stats.hp}` : bot.eliminated === "pitted" ? "PITTED" : "DESTROYED";
+      const hp = bot.alive ? bot.hpFrac : 0;
+      const now = performance.now();
+      if (hp > c.lag) c.lag = hp; // healed or a new match: no ghost
+      else if (hp < c.lag - 0.001 && c.lagHoldUntil < now - 1000) c.lagHoldUntil = now + 450; // fresh hit: hold, then drain
+      if (now > c.lagHoldUntil) c.lag = Math.max(hp, c.lag - 0.012);
+      c.hp.style.width = `${hp * 100}%`;
+      c.hp.style.background = hpGradient(hp);
+      c.hpChip.style.width = `${c.lag * 100}%`;
+      c.hpText.textContent = bot.alive ? `${Math.max(0, Math.ceil(bot.hp))} / ${bot.def.stats.hp}` : bot.eliminated === "pitted" ? "PITTED" : "DESTROYED";
+      c.root.classList.toggle("low", bot.alive && hp < 0.3);
       c.charge.style.width = `${bot.weaponCharge * 100}%`;
       c.charge.classList.toggle("ready", bot.weaponReady);
+      c.chargeLabel.textContent = !bot.alive ? "" : bot.weaponReady ? "READY" : `${Math.floor(bot.weaponCharge * 100)}%`;
+      c.chargeLabel.classList.toggle("ready", bot.alive && bot.weaponReady);
       c.status.textContent = statusLine(bot);
       if (brain) {
         const eff = brain.effectiveMode;
@@ -363,25 +391,78 @@ export class Hud {
     const r = world.result;
     if (!r) return;
     this.resultEl.classList.remove("hidden");
+    const next = secondsToNext !== null ? `Next match in <b>${Math.max(0, Math.ceil(secondsToNext))}s</b> · N to skip` : "Press N for a new match";
+    // Called every frame while the result shows: build the card once (so its entrance animation plays), then just tick the countdown.
+    if (this.resultFor === world) {
+      const el = this.resultEl.querySelector(".result-next");
+      if (el && el.innerHTML !== next) el.innerHTML = next;
+      return;
+    }
+    this.resultFor = world;
     const winner = r.winner ? world.bot(r.winner) : null;
     const rows = r.standings
       .map((s, i) => {
         const b = world.bot(s.id)!;
         const brain = [b.stats.jevDecisions > 0 ? "Jev" : "", b.stats.trainedDecisions > 0 ? "trained" : "", b.stats.decisions > b.stats.jevDecisions + b.stats.trainedDecisions ? "baseline" : ""].filter(Boolean).join(" + ") || "baseline";
-        return `<tr class="${s.id === r.winner ? "win" : ""}"><td>${i + 1}</td><td style="color:#${b.def.color.toString(16).padStart(6, "0")}">${s.id}</td><td>${s.eliminated ? s.eliminated.toUpperCase() : s.hp + " hp"}</td><td>${s.damageDealt} dmg</td><td>${b.stats.hits} hits</td><td>${b.stats.decisions} decisions (${brain})</td></tr>`;
+        const fate = s.eliminated ? `<span class="fate ${s.eliminated}">${s.eliminated.toUpperCase()}</span>` : `<span class="fate alive">${s.hp} hp</span>`;
+        return `<tr class="${s.id === r.winner ? "win" : ""}" style="--c:${hex(b.def.color)}">
+          <td class="rank">${i + 1}</td>
+          <td class="who"><span class="who-icon">${WEAPON_ICON[b.kind] ?? ""}</span>${s.id}</td>
+          <td>${fate}</td>
+          <td class="num">${s.damageDealt}</td>
+          <td class="num">${b.stats.hits}</td>
+          <td class="brain">${b.stats.decisions} · ${brain}</td>
+        </tr>`;
       })
       .join("");
+    const wc = hex(winner?.def.color ?? 0xffffff);
     this.resultEl.innerHTML = `
-      <div class="result-card">
+      <div class="result-card" style="--c:${wc}">
         <div class="result-kicker">${r.reason === "judges" ? "JUDGES' DECISION" : r.reason === "draw" ? "DRAW" : "LAST BOT STANDING"}</div>
-        <div class="result-winner" style="--c:#${(winner?.def.color ?? 0xffffff).toString(16).padStart(6, "0")}">${r.winner ?? "NOBODY"}</div>
-        <div class="result-sub">${winner ? winner.def.tagline : ""} · ${world.fightTime.toFixed(0)}s</div>
-        <table>${rows}</table>
-        <div class="result-next">${secondsToNext !== null ? `Next match in ${Math.ceil(secondsToNext)}s` : "Press N for a new match"}</div>
+        <div class="result-head">
+          ${winner ? `<span class="result-icon">${WEAPON_ICON[winner.kind] ?? ""}</span>` : ""}
+          <div class="result-winner">${r.winner ?? "NOBODY"}</div>
+        </div>
+        <div class="result-sub">${winner ? `${winner.def.tagline} · ` : ""}${world.fightTime.toFixed(0)}s</div>
+        <table>
+          <thead><tr><th>#</th><th>Bot</th><th>Result</th><th class="num">Damage</th><th class="num">Hits</th><th>Decisions · brain</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="result-next">${next}</div>
       </div>`;
   }
   hideResult() {
+    this.resultFor = null;
     this.resultEl.classList.add("hidden");
+  }
+}
+
+const hex = (c: number) => "#" + c.toString(16).padStart(6, "0");
+
+/** Health fill: green when healthy, amber at half, red when critical; a light top edge so it reads as a bar. */
+function hpGradient(f: number): string {
+  const h = Math.round(f > 0.5 ? 50 + (f - 0.5) * 2 * 82 : f * 2 * 50); // 132 (green) → 50 (amber) → 0 (red)
+  return `linear-gradient(180deg, hsl(${h} 95% 66%) 0%, hsl(${h} 88% 50%) 55%, hsl(${h} 90% 40%) 100%)`;
+}
+
+/** Text with every current-match callsign wrapped in a span tinted that bot's colour. */
+function appendWithBots(el: HTMLElement, text: string, bots: Map<string, string>) {
+  const ids = [...bots.keys()].sort((a, b) => b.length - a.length);
+  if (!ids.length) {
+    el.textContent = text;
+    return;
+  }
+  const re = new RegExp(`(${ids.map((id) => id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "g");
+  for (const part of text.split(re)) {
+    if (!part) continue;
+    const c = bots.get(part);
+    if (c) {
+      const span = document.createElement("span");
+      span.className = "who";
+      span.style.setProperty("--c", c);
+      span.textContent = part;
+      el.append(span);
+    } else el.append(part);
   }
 }
 

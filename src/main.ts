@@ -268,13 +268,17 @@ function handleEvent(e: SimEvent) {
       const dir = victim && attacker ? toWorld(victim.p).sub(toWorld(attacker.p)).normalize() : new THREE.Vector3(0, 1, 0);
       const now = world.time;
       const crit = e.crit;
+      const paint = victim?.def.color ?? 0x9aa0aa;
       if (e.weapon === "saw") {
         effects.sparkBurst(at, dir, 0.4 + e.power * 0.6, 0xffd36e);
+        if (e.amount >= 12) effects.debris(at, dir, 2, paint, 0.7);
         sound.sawBite(e.power);
         lastBite.set(e.attacker, now);
       } else if (e.weapon === "hammer") {
         effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 1, 0xffffff);
         effects.ring(at, 0xff6a3d, 1.4);
+        effects.debris(at, new THREE.Vector3(0, 0, 0), 6, paint);
+        effects.scorch(at, 0.9, 0.45);
         scene.kick(0.9);
         triggerSlowmo(0.35, 0.45);
         sound.hammerStrike(true, crit);
@@ -302,6 +306,7 @@ function handleEvent(e: SimEvent) {
       } else if (e.weapon === "spinner") {
         effects.sparkBurst(at, dir, 0.6 + e.power * 0.6, 0xd9b3ff);
         effects.ring(at, 0xb57bff, 0.9);
+        effects.debris(at, dir, Math.round(3 + e.power * 4), paint);
         scene.kick(0.5);
         sound.spinnerHit(e.power, crit);
         lastBite.set(e.attacker, now);
@@ -314,10 +319,15 @@ function handleEvent(e: SimEvent) {
       } else if (e.weapon === "ram") {
         effects.sparkBurst(at, dir, Math.min(1, e.amount / 14), 0xc8ffc0);
         effects.ring(at, 0x7cff6e, 1.1);
+        if (e.amount >= 10) effects.debris(at, dir, Math.min(6, Math.round(e.amount / 4)), paint);
         scene.kick(0.6);
         sound.slam(e.power * 9, crit);
       } else if (e.weapon === "vent") {
-        if (e.power > 0) effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 0.5, 0xff7a1a);
+        if (e.power > 0) {
+          effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 0.5, 0xff7a1a);
+          effects.embers(at, 6);
+          effects.scorch(at, 0.7, 0.4);
+        }
       } else if (e.weapon === "shock") {
         effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 0.9, 0x9fe8ff);
         effects.ring(at, 0x66ddff, 1.2);
@@ -327,6 +337,7 @@ function handleEvent(e: SimEvent) {
         // Crits get the full treatment: extra sparks, a chime, a camera kick, a beat of slow motion.
         effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 1, 0xfff1a8);
         effects.ring(at, 0xffd400, 1.6);
+        effects.debris(at, dir, 5, paint);
         scene.kick(0.6);
         triggerSlowmo(0.45, 0.4);
         sound.crit();
@@ -338,6 +349,7 @@ function handleEvent(e: SimEvent) {
       if (!e.landed) {
         effects.sparkBurst(toWorld(e.at, 0.1), new THREE.Vector3(0, 1, 0), 0.4, 0xffffff);
         effects.ring(toWorld(e.at), 0xffffff, 0.8);
+        effects.scorch(toWorld(e.at), 0.55, 0.3); // the head leaves a dent in the floor
         scene.kick(0.35);
         sound.hammerStrike(false);
       }
@@ -399,6 +411,9 @@ function handleEvent(e: SimEvent) {
       effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 1, 0xff8844);
       effects.sparkBurst(at, new THREE.Vector3(0, 1, 0), 1, 0xffffff);
       effects.ring(at, 0xff4422, 2.2);
+      effects.debris(at, new THREE.Vector3(0, 0, 0), 18, world.bot(e.bot)?.def.color ?? 0x9aa0aa, 1.3);
+      effects.scorch(at, 2.0, 0.8);
+      effects.embers(at, 30);
       for (let i = 0; i < 12; i++) effects.smokePuff(at, true);
       scene.kick(1.1);
       triggerSlowmo(0.25, 1.3);
@@ -618,7 +633,7 @@ function frame(now: number) {
   // Render side
   const dtScaled = realDt * simScale;
   scene.updateArena(world.fightTime, dtScaled);
-  for (const m of meshes) m.update(dtScaled, world.time, (p, heavy) => effects.smokePuff(p, heavy));
+  for (const m of meshes) m.update(dtScaled, world.time, (p, heavy) => effects.smokePuff(p, heavy), (p, n) => effects.embers(p, n));
   effects.update(dtScaled);
   const alive = world.alive;
   const focus = (alive.length ? alive : world.bots).map((b) => b.p);

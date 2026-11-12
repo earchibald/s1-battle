@@ -14,5 +14,5 @@
     "noEmit": true,
     "paths": { "@shared/*": ["./shared/*"] }
   },
-  "include": ["src", "shared", "server", "scripts"]
+  "include": ["src", "shared", "server", "scripts", "dev"]
 }
