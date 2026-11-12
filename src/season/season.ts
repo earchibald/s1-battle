@@ -30,13 +30,21 @@ export const SEASON_MATCHES = LEAGUE_WEEKS * 2 + 2;
 export type Origin = "garage" | "library" | "stock" | "wildcard";
 export type Stage = "league" | "lastchance" | "final";
 
+/** The user who designed a bot: a profile in src/account/accounts.ts. The name is frozen at season start. */
+export interface Owner {
+  id: string;
+  name: string;
+}
+
 export interface Entrant {
   /** The bot's arena id: its callsign. Unique in the league. */
   id: string;
   build: BotBuild;
   origin: Origin;
-  /** One of the player's own builds (Garage roster or Library). */
+  /** Designed by the user who started the season (Garage roster or Library). */
   mine: boolean;
+  /** The designer, when the bot belongs to a user. Stock bots, wildcards and pre-accounts saves have none. */
+  owner?: Owner;
 }
 
 export interface Fixture {
@@ -158,10 +166,17 @@ export function wildcardBuilds(): BotBuild[] {
   ];
 }
 
+/** A build with the user who designed it, as the Library and other users' Garages hand them over. */
+export interface OwnedBuild {
+  build: BotBuild;
+  owner?: Owner;
+}
+
 export interface Candidate {
   build: BotBuild;
   origin: Origin;
   mine: boolean;
+  owner?: Owner;
   /** In the default league. */
   selected: boolean;
 }
@@ -174,23 +189,33 @@ function isStock(b: BotBuild): boolean {
 }
 
 /**
- * Everyone who could enter: the Garage roster, saved Library builds, the stock bots and the house wildcards,
- * one per callsign (earlier sources win a name clash, so a modified RIPSAW in the Garage replaces the stock one).
- * The default league is the player's own builds first, then stock, then wildcards, up to eight.
+ * Everyone who could enter: the Garage roster, saved Library builds, other users' Garage rosters, the stock bots
+ * and the house wildcards, one per callsign (earlier sources win a name clash, so a modified RIPSAW in the Garage
+ * replaces the stock one). The default league is the user's own builds first, then other designers', then stock,
+ * then wildcards, up to eight.
+ *
+ * `me` is the user setting the season up: the roster is theirs, and `mine` marks their builds. Without `me`
+ * (scripts, pre-accounts callers) every Garage and Library build counts as the player's own and has no owner.
  */
-export function candidatePool(roster: BotBuild[], library: BotBuild[]): Candidate[] {
+export function candidatePool(roster: BotBuild[], library: (BotBuild | OwnedBuild)[], me?: Owner, rivalGarages: OwnedBuild[] = []): Candidate[] {
   const out: Candidate[] = [];
   const seen = new Set<string>();
-  const add = (b: BotBuild, origin: Origin) => {
+  const add = (b: BotBuild, origin: Origin, owner?: Owner) => {
     const key = b.name.trim().toUpperCase();
     if (!key || seen.has(key)) return;
     if ((origin === "garage" || origin === "library") && isStock(b)) return; // it will enter as the stock bot
     if (costOf(b).over > 0) return; // illegal builds cannot deploy, so they cannot enter either
     seen.add(key);
-    out.push({ build: cloneBuild(b), origin, mine: origin === "garage" || origin === "library", selected: false });
+    const designed = origin === "garage" || origin === "library";
+    const c: Candidate = { build: cloneBuild(b), origin, mine: designed && (me ? owner?.id === me.id : true), selected: false };
+    if (designed && owner) c.owner = { id: owner.id, name: owner.name };
+    out.push(c);
   };
-  for (const b of roster) add(b, "garage");
-  for (const b of library) add(b, "library");
+  const saved: OwnedBuild[] = library.map((x) => ("build" in x ? x : { build: x, owner: me }));
+  for (const b of roster) add(b, "garage", me);
+  for (const x of saved) if (!me || x.owner?.id === me.id) add(x.build, "library", x.owner);
+  for (const x of rivalGarages) add(x.build, "garage", x.owner);
+  for (const x of saved) if (me && x.owner?.id !== me.id) add(x.build, "library", x.owner);
   for (const k of STOCK_ORDER) add(stockBuild(k), "stock");
   for (const b of wildcardBuilds()) add(b, "wildcard");
   let n = 0;
@@ -233,11 +258,17 @@ export function leagueSchedule(ids: string[], seed: number): Fixture[] {
 }
 const fixtureSeed = (seed: number, index: number) => ((seed * 31 + (index + 1) * 977) >>> 0) % 100000;
 
-export function createSeason(entrants: { build: BotBuild; origin: Origin; mine: boolean }[], seed: number, startedAt = 0): SeasonState {
+export function createSeason(entrants: { build: BotBuild; origin: Origin; mine: boolean; owner?: Owner }[], seed: number, startedAt = 0): SeasonState {
   if (entrants.length !== LEAGUE_SIZE) throw new Error(`a season needs exactly ${LEAGUE_SIZE} bots`);
   const names = new Set(entrants.map((e) => e.build.name));
   if (names.size !== entrants.length) throw new Error("every bot in a season needs its own callsign");
-  const list: Entrant[] = entrants.map((e, i) => ({ id: e.build.name, build: { ...cloneBuild(e.build), id: `season-${i}` }, origin: e.origin, mine: e.mine }));
+  const list: Entrant[] = entrants.map((e, i) => ({
+    id: e.build.name,
+    build: { ...cloneBuild(e.build), id: `season-${i}` },
+    origin: e.origin,
+    mine: e.mine,
+    ...(e.owner ? { owner: { id: e.owner.id, name: e.owner.name } } : {}),
+  }));
   return { version: SEASON_VERSION, seed, startedAt, entrants: list, fixtures: leagueSchedule(list.map((e) => e.id), seed), records: [], champion: null };
 }
 
@@ -250,6 +281,24 @@ export const recordFor = (s: SeasonState, fixtureId: string) => s.records.find((
 export const nextFixture = (s: SeasonState): Fixture | null => s.fixtures.find((f) => !recordFor(s, f.id)) ?? null;
 export const isComplete = (s: SeasonState) => s.champion !== null;
 export const lastRecord = (s: SeasonState): MatchRecord | null => s.records[s.records.length - 1] ?? null;
+
+/** Every user with a bot in the season, in entry order. */
+export function designers(s: SeasonState): Owner[] {
+  const out: Owner[] = [];
+  for (const e of s.entrants) if (e.owner && !out.some((o) => o.id === e.owner!.id)) out.push(e.owner);
+  return out;
+}
+
+/**
+ * How the storylines credit a designed bot: "your " while a single user has bots in the league, the designer's
+ * name ("Ana's ") once two or more users do, and nothing for house bots.
+ */
+export function whose(s: SeasonState, id: string): string {
+  const e = entrant(s, id);
+  if (!e) return "";
+  if (e.owner && designers(s).length > 1) return `${e.owner.name}'s `;
+  return e.mine || e.owner ? "your " : "";
+}
 
 export interface Standing {
   id: string;
@@ -469,7 +518,7 @@ function headlines(before: SeasonState, after: SeasonState, rec: MatchRecord): s
   const add = (w: number, text: string) => out.push({ w, text });
   const [first, second, third, fourth] = rec.rows;
   const W = first.id;
-  const you = (id: string) => (entrant(after, id)?.mine ? "your " : "");
+  const you = (id: string) => whose(after, id);
   const prior = rivalries(before);
 
   if (rec.stage === "final") {
@@ -599,9 +648,20 @@ export function fixtureHooks(s: SeasonState, fx: Fixture): Hook[] {
         if (cold >= 2 && row(id).rank <= 6) add(52, "underdog", `${id} has finished in the bottom two ${count(cold)} matches running and is sliding.`);
       }
     }
-    const mine = inFx.filter((id) => entrant(s, id)?.mine);
-    if (mine.length && row(mine[0]).played === 0) add(66, "debut", `Your build ${mine[0]} makes its league debut against ${inFx.filter((id) => id !== mine[0]).join(", ")}.`);
-    else if (mine.length) add(45, "plain", `Your build ${mine[0]} is ${ordinal(row(mine[0]).rank)} on ${plural(row(mine[0]).points, "point")} going in.`);
+    const mine = inFx.filter((id) => whose(s, id));
+    const built = (id: string) => {
+      const w = whose(s, id);
+      return w === "your " ? `Your build ${id}` : `${w}${id}`;
+    };
+    if (mine.length && row(mine[0]).played === 0) add(66, "debut", `${built(mine[0])} makes its league debut against ${inFx.filter((id) => id !== mine[0]).join(", ")}.`);
+    else if (mine.length) add(45, "plain", `${built(mine[0])} is ${ordinal(row(mine[0]).rank)} on ${plural(row(mine[0]).points, "point")} going in.`);
+    // Two users' bots in one match is its own story.
+    const camps = new Map<string, string>();
+    for (const id of inFx) {
+      const o = entrant(s, id)?.owner;
+      if (o && !camps.has(o.id)) camps.set(o.id, `${o.name}'s ${id}`);
+    }
+    if (camps.size >= 2) add(68, "stakes", `Designer against designer: ${[...camps.values()].join(" meets ")}.`);
     if (leaguePlayed < 2) add(30, "plain", `Opening week. Nobody has a point and everybody has a plan.`);
     else add(20, "plain", `${inFx[0]} (${ordinal(row(inFx[0]).rank)}) is the bot to beat here; ${inFx[inFx.length - 1]} (${ordinal(row(inFx[inFx.length - 1]).rank)}) has the most to gain.`);
   }

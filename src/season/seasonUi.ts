@@ -57,6 +57,10 @@ export interface SeasonHost {
   ticker(text: string, cls?: string): void;
   toast(text: string): void;
   click?(): void;
+  /** A season has just been created. */
+  onSeasonStart?(s: SeasonState): void;
+  /** A fixture has just been recorded (played in the arena or simulated). `s` already includes `rec`. */
+  onResult?(s: SeasonState, rec: MatchRecord): void;
 }
 
 export interface LiveFixture {
@@ -143,6 +147,7 @@ export class SeasonMode {
     this.state = applyResult(this.state, id, outcomeFromWorld(world, this.log.kills));
     saveSeason(this.state);
     const rec = recordFor(this.state, id);
+    if (rec) this.host.onResult?.(this.state, rec);
     for (const h of rec?.headlines.slice(0, 3) ?? []) this.host.ticker(h, "season");
     this.shown = null;
     this.recapTimer = window.setTimeout(() => {
@@ -202,6 +207,7 @@ export class SeasonMode {
         this.leave();
         this.state = createSeason(chosen, (Date.now() % 1_000_000) + 1, Date.now());
         saveSeason(this.state);
+        this.host.onSeasonStart?.(this.state);
         this.shown = null;
         this.view = "hub";
         this.host.ticker(`A new season begins: ${this.state.entrants.map((e) => e.id).join(" · ")}`, "season");
@@ -226,10 +232,12 @@ export class SeasonMode {
       case "sim": {
         if (!this.state) return;
         const midMatch = this.playing && this.live !== null;
+        const before = this.state.records.length;
         this.state = simulateNext(this.state);
         saveSeason(this.state);
         this.shown = null;
-        const rec = lastRecord(this.state);
+        const rec = this.state.records.length > before ? lastRecord(this.state) : null;
+        if (rec) this.host.onResult?.(this.state, rec);
         if (rec) this.host.ticker(`${rec.label} (simulated): ${rec.headlines[0] ?? ""}`, "season");
         // The arena was showing the fixture that has just been simulated: move it on to the next one.
         if (midMatch) {
