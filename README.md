@@ -162,6 +162,28 @@ All of the scheduling, scoring and storyline logic is pure and seeded (`src/seas
 and prints every fixture, hook, result and headline; `--check` also verifies the schedule's guarantees over 30
 seeds and that a season replays identically from its seed.
 
+## Users: bettors and bot designers
+
+Everyone who plays on the machine is a **user** (`P` or the name on the control bar), and a user does both jobs:
+
+- **One wallet.** Each user has a balance of play-money credits (◈, starting at 1,000) with a ledger of every
+  entry. Bets are staked from it and paid back into it, and so is designer prize money. It is the only wallet:
+  `accounts.debit()` / `accounts.credit()` in `src/account/accounts.ts` are how anything moves credits.
+- **Their own Garage.** The four roster slots belong to the user at the controls; switching user swaps the
+  Garage (and the exhibition match) to theirs. **Save build** signs the build with its designer. The Library tab
+  shows your builds, and other designers' builds to copy from.
+- **Bots enter seasons under their designer.** The season picker offers every user's Garage and saved builds;
+  each entrant carries its designer (`Entrant.owner`), shown beside the bot and used in the storylines
+  ("Ana's RIPSAW…", "Designer against designer").
+- **Prize money.** A designed bot pays its designer after every season match, played or simulated: 40 / 20 / 10
+  for 1st / 2nd / 3rd in a league match, +5 per elimination, 60 for getting through Last Chance, and
+  300 / 120 / 60 / 30 in the Grand Final (`src/account/prizes.ts`). House bots earn nothing.
+- **Designer record.** Bots entered, matches, wins, titles and prize money, kept per user.
+
+Users are local profiles in `localStorage` (up to eight, hot-seat); nothing leaves the machine. The Garage roster
+and saved builds from before accounts existed are adopted by the first user. `npx tsx scripts/account-check.ts`
+checks the wallet arithmetic, ownership through a season and the prize table headlessly.
+
 ## How a decision works
 
 1. `src/sim/perception.ts` builds two views of the moment for a bot: a semantic **Perception** (words and
@@ -202,9 +224,11 @@ src/ui/      HUD cards, ticker/commentary, event log, labels, comic callouts (+ 
              designer.ts (the Garage), library.ts
 src/season/  season.ts (pure: schedule, points, table, rivalries, hooks, headlines, awards), runner.ts (World -> result,
              headless fixtures), storage.ts, seasonUi.ts + season.css (setup / hub / champion screens, arena hooks)
+src/account/ accounts.ts (users: profiles, the one wallet and its ledger, designer records), garage.ts (per-user rosters),
+             prizes.ts (pure: designer prize money per match), accountUi.ts + account.css (the Users screen)
 src/audio/   procedural Web Audio sound engine (no asset files)
 scripts/     probe-jev.ts (latency check), headless.ts (tournaments; stock kinds or a garage export), balance.ts (win share sweep)
-             season-sim.ts (a whole season, headless)
+             season-sim.ts (a whole season, headless), account-check.ts (wallet, ownership, prizes)
              train/ (rollout data generation, PyTorch training, parity/fork checks, brain-vs-brain tournaments)
              league/ (improvement loop: paired matches, SPRT promotion gate, Bradley–Terry ladder, curriculum)
 public/models/trained-brain.json   the shipped trained-brain weights (league model g3b, float16, ~390 KB)
@@ -212,7 +236,7 @@ public/models/trained-brain.json   the shipped trained-brain weights (league mod
 
 ## Controls
 
-Space pause · N new match · G garage · S season · L event log · / search the log · Esc close it ·
+Space pause · N new match · G garage · S season · P users · L event log · / search the log · Esc close it ·
 C auto/free camera · F (or ⛶) fullscreen · D debug nav lines · M mute · 1/2/3 speed · J all Jev · T all trained ·
 B all baseline. In free camera: drag to orbit, Option/⌘/Shift-drag (Alt/Ctrl/Shift elsewhere) or right-drag to pan
 across the floor, scroll to zoom.

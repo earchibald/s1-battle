@@ -26,6 +26,7 @@ import {
 import { STOCK_BUILDS, STOCK_ORDER, defaultTechniqueLogic, stockBuild } from "@shared/bots/index";
 import { STOCK_PROMPTS } from "@shared/bots/prompts";
 import { Library } from "./library";
+import { accounts } from "../account/accounts";
 import type { QuickSimResult } from "../sim/quicksim";
 import { buildQuestions, defFromBuild, evalCondition, makeContext } from "@shared/logic";
 import { DEFAULT_STYLE, STYLE_INFO, STYLE_KEYS, STYLE_PRESETS, type StyleKey, type TrainedStyle } from "@shared/build";
@@ -149,6 +150,7 @@ export class Designer {
             <div class="dz-kicker">S1 ARENA</div>
             <h1>GARAGE</h1>
             <div class="dz-sub">Build the machine. Write the mind.</div>
+            <div class="dz-designer" id="dz-designer" title="The user these four slots belong to. Saved builds are signed with this name."></div>
           </div>
           <nav class="dz-roster" id="dz-roster"></nav>
           <div class="dz-actions">
@@ -213,6 +215,20 @@ export class Designer {
   }
   toggle() {
     this.open ? this.hide() : this.show();
+  }
+
+  /** The roster array now holds another user's builds (profile switch): drop per-slot work and redraw. */
+  reload() {
+    this.slot = 0;
+    this.lastSim = null;
+    this.simHtml = "";
+    this.tune = null;
+    this.ab = null;
+    this.styleAb = null;
+    if (this.open) {
+      this.renderAll();
+      requestAnimationFrame(() => this.resizePreview());
+    }
   }
 
   private setTab(t: Tab) {
@@ -305,6 +321,14 @@ export class Designer {
   /* ------------------------------------------------------------------ rendering ------------------- */
 
   private renderAll() {
+    const me = accounts.active();
+    const who = this.root.querySelector<HTMLElement>("#dz-designer");
+    if (who) {
+      const name = document.createElement("b");
+      name.textContent = me.name;
+      who.style.setProperty("--c", hex(me.color));
+      who.replaceChildren(document.createElement("i"), "Designer ", name);
+    }
     this.renderRoster();
     this.renderPreviewPanel();
     this.root.querySelectorAll<HTMLButtonElement>(".dz-tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === this.tab));
@@ -1068,6 +1092,9 @@ export class Designer {
 
   private htmlLibrary(): string {
     const lib = this.library;
+    const me = accounts.active();
+    const mine = lib.buildsOf(me.id);
+    const theirs = lib.builds.filter((sb) => sb.ownerId !== me.id);
     const when = (t: number) => {
       const d = new Date(t);
       return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
@@ -1086,8 +1113,18 @@ export class Designer {
       </article>`;
     };
     const stock = STOCK_ORDER.map((k) => card(STOCK_BUILDS[k], `<button data-lstock="${k}" class="primary-ish">Load into slot ${this.slot + 1}</button>`, STOCK_BUILDS[k].tagline)).join("");
-    const saved = lib.builds.length
-      ? lib.builds
+    // card() escapes its subtitle, so the designer's name goes in raw here.
+    const others = theirs
+      .map((sb) =>
+        card(
+          sb.build,
+          `<button data-lload="${sb.id}" class="primary-ish" title="Loads a copy into your slot. The original stays theirs.">Copy into slot ${this.slot + 1}</button>`,
+          `by ${accounts.nameOf(sb.ownerId) ?? "a former designer"} · ${sb.build.techniques.length} techniques · ${sb.build.logic.rules.length} rules`,
+        ),
+      )
+      .join("");
+    const saved = mine.length
+      ? mine
           .map((sb) =>
             card(
               sb.build,
@@ -1110,11 +1147,19 @@ export class Designer {
       : `<div class="dz-empty">No saved rosters. Name the current four and save them as a set.</div>`;
     return `
       <section class="dz-sec">
-        <header class="dz-sec-head-row"><div><h2>Saved builds</h2><p>Your library. Loading replaces slot ${this.slot + 1} (${esc(this.b.name)}) body and brains; deploy to fight with it.</p></div>
+        <header class="dz-sec-head-row"><div><h2>${esc(me.name)}'s builds</h2><p>The bots you have designed and saved. They can enter a season under your name and earn you prize money. Loading replaces slot ${this.slot + 1} (${esc(this.b.name)}) body and brains; deploy to fight with it.</p></div>
           <div class="dz-sec-actions"><button data-a="lib-import" title="Add the builds from a garage or library export to the library">⇪ Import to library</button><button data-a="lib-export" title="Download the whole library as JSON">⇩ Export library</button></div>
         </header>
         <div class="dz-lib-grid">${saved}</div>
       </section>
+      ${
+        others
+          ? `<section class="dz-sec">
+        <header><h2>Other designers</h2><p>Builds saved by the other users on this machine. Copy one into a slot to study or rework it; saving it puts a version in your own library.</p></header>
+        <div class="dz-lib-grid">${others}</div>
+      </section>`
+          : ""
+      }
       <section class="dz-sec">
         <header class="dz-sec-head-row"><div><h2>Rosters</h2><p>Whole line-ups of four. Loading one replaces all four slots.</p></div>
           <div class="dz-sec-actions dz-roster-save"><input id="dz-roster-name" class="dz-text" placeholder="roster name" maxlength="40" spellcheck="false" /><button data-a="roster-save">💾 Save current roster</button></div>
@@ -1207,8 +1252,11 @@ export class Designer {
   }
 
   private saveCurrentBuild() {
-    const { saved, replaced } = this.library.saveBuild(this.b);
-    this.cb.toast(`${saved.build.name} ${replaced ? "updated in" : "saved to"} the library`);
+    const me = accounts.active();
+    const { saved, replaced } = this.library.saveBuild(this.b, me.id);
+    const rival = this.library.rivalHolding(saved.build.name, me.id);
+    const clash = rival ? ` ${accounts.nameOf(rival.ownerId) ?? "Another designer"} also has a ${saved.build.name}: only one can enter a season, so consider a new callsign.` : "";
+    this.cb.toast(`${saved.build.name} ${replaced ? "updated in" : "saved to"} ${me.name}'s builds.${clash}`);
     if (this.tab === "library") this.renderEditor();
   }
 

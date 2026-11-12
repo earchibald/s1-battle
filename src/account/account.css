@@ -1,0 +1,71 @@
+/* Users screen (src/account/accountUi.ts). Sits on the season overlay's shell (.sz), so only the pieces unique
+   to accounts are styled here, plus the designer tags the Garage, HUD and season screens show. */
+
+.ac { z-index: 21; }
+.ac .sz-spacer { flex: 1; }
+.ac-body { grid-template-columns: minmax(300px, .9fr) minmax(340px, 1.1fr) minmax(320px, 1fr) !important; }
+.ac button:disabled, .ac input:disabled { opacity: .4; cursor: not-allowed; }
+
+.ac-users, .ac-ledger, .ac-bots { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ac-user { --c: #fff; display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 12px; border: 1px solid var(--panel-border); background: rgba(255,255,255,.03); }
+.ac-user.on { border-color: color-mix(in srgb, var(--c) 65%, transparent); background: color-mix(in srgb, var(--c) 10%, transparent); }
+.ac-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--c); box-shadow: 0 0 12px -2px var(--c); flex: none; }
+.ac-user-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ac-user-text b { font-size: 14px; letter-spacing: .04em; overflow-wrap: anywhere; }
+.ac-user-text small { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+.ac-user button { font-size: 12px; padding: 5px 10px; }
+.ac-active { font-style: normal; font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .12em; color: var(--c); }
+
+.ac-row { display: flex; gap: 8px; }
+.ac-input { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--panel-border); background: rgba(0,0,0,.35); color: var(--text); }
+.ac-input:focus { outline: none; border-color: var(--gold); }
+.ac-row button { font-size: 13px; padding: 8px 12px; }
+
+.ac-balance { --c: var(--gold); display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 14px 16px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--c) 45%, transparent); background: linear-gradient(120deg, color-mix(in srgb, var(--c) 14%, transparent), transparent 70%); }
+.ac-balance span { font-family: var(--mono); font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--muted); }
+.ac-balance b { font-family: var(--mono); font-size: 30px; font-weight: 700; color: #fff6dc; }
+.ac-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 8px; }
+.ac-tiles div { display: flex; flex-direction: column; gap: 3px; padding: 8px 9px; border-radius: 10px; background: rgba(255,255,255,.04); border: 1px solid var(--panel-border); min-width: 0; }
+.ac-tiles span { font-family: var(--mono); font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.ac-tiles b { font-family: var(--mono); font-size: 16px; }
+.ac .in { color: #7cff6e; }
+.ac .out { color: #ff8f99; }
+
+.ac-ledger li { display: flex; align-items: center; gap: 10px; padding: 7px 9px; border-radius: 9px; background: rgba(255,255,255,.03); font-size: 12px; }
+.ac-kind { font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .1em; padding: 2px 6px; border-radius: 5px; background: rgba(255,255,255,.1); color: var(--muted); flex: none; min-width: 52px; text-align: center; }
+.ac-ledger .k-prize .ac-kind { background: rgba(255,209,102,.25); color: #ffe6a8; }
+.ac-ledger .k-payout .ac-kind { background: rgba(124,255,110,.2); color: #b9ffb1; }
+.ac-ledger .k-stake .ac-kind { background: rgba(110,231,255,.18); color: #bff3ff; }
+.ac-note { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; overflow-wrap: anywhere; }
+.ac-note small { font-family: var(--mono); font-size: 9px; color: var(--faint); }
+.ac-ledger b { font-family: var(--mono); font-size: 13px; flex: none; }
+
+.ac-bots li { --c: #fff; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; border-left: 3px solid var(--c); background: rgba(255,255,255,.03); }
+.ac-bots i { font-style: normal; font-size: 18px; }
+.ac-bots div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ac-bots b { font-size: 13px; letter-spacing: .08em; color: var(--c); }
+.ac-bots small { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+.ac-bots small.gold { color: var(--gold); }
+.ac-prizes { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ac-prizes td { padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,.06); }
+.ac-prizes td:last-child { text-align: right; font-family: var(--mono); color: #fff1cf; }
+
+@media (max-width: 1100px) {
+  .ac-body { grid-template-columns: 1fr !important; overflow-y: auto; }
+  .ac-tiles { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* HUD: who is at the controls, and what they have to bet with. */
+button.account { --c: var(--jev); display: inline-flex; align-items: center; gap: 7px; border-color: color-mix(in srgb, var(--c) 55%, transparent); background: color-mix(in srgb, var(--c) 12%, transparent); }
+button.account:hover { background: color-mix(in srgb, var(--c) 24%, transparent); }
+button.account i { width: 9px; height: 9px; border-radius: 50%; background: var(--c); }
+button.account b { font-weight: 700; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.account span { font-family: var(--mono); font-size: 12px; color: #ffe6a8; }
+
+/* Garage header: whose slots these are. */
+.dz-designer { --c: var(--jev); display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; font-family: var(--mono); font-size: 10px; letter-spacing: .08em; color: var(--muted); }
+.dz-designer i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.dz-designer b { color: var(--c); letter-spacing: .04em; }
+
+/* Season screens: a bot's designer, when it is not the user at the controls. */
+.sz-by { font-style: normal; font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .04em; padding: 1px 5px; border-radius: 5px; color: var(--muted); border: 1px solid var(--panel-border); white-space: nowrap; }
