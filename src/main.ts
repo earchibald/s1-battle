@@ -19,13 +19,14 @@ import { Designer, uniqueNamed } from "./ui/designer";
 import { SoundEngine } from "./audio/sound";
 import { SeasonMode } from "./season/seasonUi";
 import { pitPhase, sawRaise } from "./sim/arena";
+import { toggleFullscreen } from "./ui/fullscreen";
 import type { HammerPhase } from "./sim/bot";
 import type { BotKind, Maneuver } from "@shared/types";
 
 /**
  * S1 Arena entry point. Fixed-step simulation, async brains, Three.js rendering, HTML HUD, and the Garage
  * (designer) overlay. Keyboard: Space pause · N new match · C camera · D debug · M mute · 1/2/3 speed ·
- * J/T/B all Jev/trained/baseline · G garage · S season.
+ * J/T/B all Jev/trained/baseline · G garage · S season · F fullscreen.
  */
 
 const FIXED_DT = 1 / 60;
@@ -110,6 +111,14 @@ function toast(text: string) {
   }, 3200);
 }
 
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+/** Free view's controls aren't discoverable, so say them once each time it's switched on. */
+function freeCamHint() {
+  if (scene.autoCamera) return;
+  const mod = IS_MAC ? "⌥/⌘/⇧" : "Alt/Ctrl/Shift";
+  toast(`Free cam · drag to orbit · ${mod}-drag or right-drag to pan · scroll to zoom · C for auto`);
+}
+
 const designer = new Designer(document.getElementById("designer")!, roster, {
   deploy: () => {
     season.suspend(); // a Garage deploy is an exhibition match; the season stays saved
@@ -153,7 +162,9 @@ const hud = new Hud(document.getElementById("hud")!, {
   toggleCamera() {
     scene.autoCamera = !scene.autoCamera;
     syncControls();
+    freeCamHint();
   },
+  toggleFullscreen,
   toggleDebug() {
     debug = !debug;
     if (debugLines) debugLines.visible = debug;
@@ -569,6 +580,12 @@ window.addEventListener("keydown", (ev) => {
     case "c":
     case "C":
       scene.autoCamera = !scene.autoCamera;
+      freeCamHint();
+      break;
+    case "f":
+    case "F":
+      if (ev.metaKey || ev.ctrlKey || ev.altKey) return; // leave browser shortcuts (⌘F find) alone
+      toggleFullscreen();
       break;
     case "d":
     case "D":
