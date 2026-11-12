@@ -60,7 +60,26 @@ export class ArenaScene {
   readonly camera: THREE.PerspectiveCamera;
   readonly composer: EffectComposer;
   readonly controls: OrbitControls;
-  autoCamera = true;
+  private _autoCamera = true;
+
+  get autoCamera() {
+    return this._autoCamera;
+  }
+
+  /** Switching to free view starts orbiting around wherever the cinematic camera was looking (no snap); switching
+   * back lets the cinematic camera glide from wherever free view left it. */
+  set autoCamera(on: boolean) {
+    if (on === this._autoCamera) return;
+    this._autoCamera = on;
+    if (on) {
+      this.camTarget.copy(this.controls.target);
+      const off = this.camera.position.clone().sub(this.controls.target);
+      this.camAngle = Math.atan2(off.z, off.x);
+    } else {
+      this.controls.target.copy(this.camTarget);
+      this.controls.update();
+    }
+  }
 
   private dressing: ArenaDressing;
   private pitDoors: THREE.Group[] = [];
@@ -111,7 +130,18 @@ export class ArenaScene {
     this.controls.maxPolarAngle = Math.PI * 0.47;
     this.controls.minDistance = 8;
     this.controls.maxDistance = 45;
+    // Pan across the floor (not the screen plane), so dragging slides the view over the arena.
+    this.controls.screenSpacePanning = false;
     this.controls.enabled = false;
+    // OrbitControls pans on right-drag or Ctrl/⌘/Shift + left-drag; add Option/Alt + left-drag too. Capture on the
+    // window so the button mapping is decided before OrbitControls sees the pointerdown.
+    window.addEventListener(
+      "pointerdown",
+      (ev) => {
+        if (ev.target === canvas) this.controls.mouseButtons.LEFT = ev.altKey ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
+      },
+      { capture: true },
+    );
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
@@ -673,9 +703,20 @@ export class ArenaScene {
   updateCamera(focus: Vec[], dt: number, aggression = 0) {
     this.shake = Math.max(0, this.shake - dt * 2.2);
     this.shakeSeed += dt * 40;
-    if (!this.autoCamera) {
+    if (!this._autoCamera) {
       this.controls.enabled = true;
       this.controls.update();
+      // Keep the pivot over the arena so a long pan can't lose it.
+      const lim = ARENA.half;
+      const t = this.controls.target;
+      const cx = THREE.MathUtils.clamp(t.x, -lim, lim);
+      const cz = THREE.MathUtils.clamp(t.z, -lim, lim);
+      if (cx !== t.x || cz !== t.z) {
+        this.camera.position.x += cx - t.x;
+        this.camera.position.z += cz - t.z;
+        t.x = cx;
+        t.z = cz;
+      }
       return;
     }
     this.controls.enabled = false;

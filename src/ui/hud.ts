@@ -4,6 +4,7 @@ import { ARENA, padPhase, pitCountdown, pitPhase, sawPhase, shockPhase, ventsPha
 import type { Bot } from "../sim/bot";
 import type { World } from "../sim/world";
 import { BUILD_TIME, VERSION, VERSION_LABEL } from "../version";
+import { fullscreenSupported, onFullscreenChange } from "./fullscreen";
 import changelog from "../../CHANGELOG.md?raw";
 import { EventLog, type LogInput } from "./eventlog";
 
@@ -18,6 +19,7 @@ export interface HudCallbacks {
   toggleSound(): void;
   toggleDesigner(): void;
   toggleSeason(): void;
+  toggleFullscreen(): void;
 }
 
 export interface TrainedInfo {
@@ -146,6 +148,7 @@ export class Hud {
         <button data-k="cam" title="C">🎥 Auto cam</button>
         <button data-k="debug" title="D">◎ Debug</button>
         <button data-k="sound" title="M">🔊</button>
+        <button data-k="fullscreen" title="Fullscreen (F)" aria-label="Fullscreen">⛶</button>
         <div class="seg"><button data-k="alljev" title="J">All Jev</button><button data-k="alltrained" title="T">All Trained</button><button data-k="allbase" title="B">All Baseline</button></div>
         <button data-k="garage" class="garage" title="G">🛠 Garage</button>
         <button data-k="season" class="season" title="S">🏆 Season</button>
@@ -185,6 +188,12 @@ export class Hud {
     this.controls.new.onclick = () => cb.newMatch();
     this.controls.garage.onclick = () => cb.toggleDesigner();
     this.controls.season.onclick = () => cb.toggleSeason();
+    this.controls.fullscreen.onclick = () => cb.toggleFullscreen();
+    if (!fullscreenSupported) this.controls.fullscreen.style.display = "none";
+    onFullscreenChange((on) => {
+      this.controls.fullscreen.classList.toggle("on", on);
+      this.controls.fullscreen.title = on ? "Exit fullscreen (F or Esc)" : "Fullscreen (F)";
+    });
   }
 
   private card(bot: Bot): Card {

@@ -213,7 +213,9 @@ public/models/trained-brain.json   the shipped trained-brain weights (league mod
 ## Controls
 
 Space pause · N new match · G garage · S season · L event log · / search the log · Esc close it ·
-C auto/free camera · D debug nav lines · M mute · 1/2/3 speed · J all Jev · T all trained · B all baseline.
+C auto/free camera · F (or ⛶) fullscreen · D debug nav lines · M mute · 1/2/3 speed · J all Jev · T all trained ·
+B all baseline. In free camera: drag to orbit, Option/⌘/Shift-drag (Alt/Ctrl/Shift elsewhere) or right-drag to pan
+across the floor, scroll to zoom.
 Click a bot card's brain badge to cycle that bot Jev → Trained → Baseline.
 
 ## Tuning and extending
