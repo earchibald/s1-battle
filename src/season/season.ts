@@ -290,14 +290,15 @@ export function designers(s: SeasonState): Owner[] {
 }
 
 /**
- * How the storylines credit a designed bot: "your " while a single user has bots in the league, the designer's
- * name ("Ana's ") once two or more users do, and nothing for house bots.
+ * How the storylines credit a designed bot: "your " for the bots of the user who started the season while they
+ * are the only designer in it, the designer's name ("Ana's ") for anyone else's bot or once two or more users
+ * have bots in the league, and nothing for house bots.
  */
 export function whose(s: SeasonState, id: string): string {
   const e = entrant(s, id);
   if (!e) return "";
-  if (e.owner && designers(s).length > 1) return `${e.owner.name}'s `;
-  return e.mine || e.owner ? "your " : "";
+  if (e.owner && (!e.mine || designers(s).length > 1)) return `${e.owner.name}'s `;
+  return e.mine ? "your " : "";
 }
 
 export interface Standing {

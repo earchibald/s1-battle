@@ -3,6 +3,16 @@
 The version shows in the arena's top bar (click it for this list). Bump `version` in package.json for each
 release and add a section here; the page shows the newest section.
 
+## 0.3.0 — 2026-11-11
+
+- **Users** (`P` or your name on the control bar). Everyone at the machine is a user with their own wallet of
+  play-money credits, their own Garage and their own saved builds, and each user is both a bettor and a bot
+  designer. Saved builds are signed by their designer, bots enter a season under their designer's name, and a
+  designed bot pays its designer prize money after every season match (40 / 20 / 10 in the league, +5 per
+  elimination, 60 through Last Chance, 300 / 120 / 60 / 30 in the Grand Final) into the same wallet they bet
+  from. The Users screen shows the wallet's ledger and each designer's record. Your existing Garage and library
+  carry over to the first user.
+
 ## 0.2.0 — 2026-11-09
 
 - **Event log.** Every bot thought (decision, brain, confidence, danger) and every action, hazard and match beat

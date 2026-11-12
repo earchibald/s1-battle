@@ -242,5 +242,8 @@ export class Accounts {
 /** The one accounts store for the app. */
 export const accounts = new Accounts();
 
+/** Credits as shown everywhere in the UI: "◈ 1,250". */
+export const fmtCredits = (n: number): string => `◈ ${Math.round(n).toLocaleString("en-US")}`;
+
 /** Display name for a user id ("" when unknown). */
 export const profileName = (userId: string | null | undefined): string => accounts.nameOf(userId) ?? "";
