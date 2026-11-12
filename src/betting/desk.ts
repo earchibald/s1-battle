@@ -109,29 +109,53 @@ export class BettingDesk {
     this.save();
   }
 
+  /**
+   * The season must never wait on, or be broken by, its book. If the book and the season ever disagree, the
+   * book is wound up (every open stake refunded) and the season carries on without betting.
+   */
+  private guard<T>(fallback: T, fn: () => T): T {
+    try {
+      return fn();
+    } catch (e) {
+      console.error("[betting] the book fell out of step with the season and was closed:", e);
+      try {
+        this.end("the book fell out of step with the season");
+      } catch {
+        this.sb = null;
+        this.status = "off";
+      }
+      this.changed();
+      return fallback;
+    }
+  }
+
   /** A fixture is about to be fought: betting on it closes for good. Returns the season to play, seed revealed. */
   beforeFixture(s: SeasonState, fixtureId: string): SeasonState {
-    const sb = this.sb;
-    if (!sb || !sameSeason(s, sb.season)) return s;
-    if (!sb.isLocked(fixtureId)) {
-      sb.adopt(s);
-      sb.lock(fixtureId);
-      this.save();
-      this.changed();
-    }
-    const seed = sb.season.fixtures.find((f) => f.id === fixtureId)?.seed;
-    return seed === undefined ? s : { ...s, fixtures: s.fixtures.map((f) => (f.id === fixtureId ? { ...f, seed } : f)) };
+    return this.guard(s, () => {
+      const sb = this.sb;
+      if (!sb || !sameSeason(s, sb.season)) return s;
+      if (!sb.isLocked(fixtureId)) {
+        sb.adopt(s);
+        sb.lock(fixtureId);
+        this.save();
+        this.changed();
+      }
+      const seed = sb.season.fixtures.find((f) => f.id === fixtureId)?.seed;
+      return seed === undefined ? s : { ...s, fixtures: s.fixtures.map((f) => (f.id === fixtureId ? { ...f, seed } : f)) };
+    });
   }
 
   /** A result was recorded: settle what it decides, then price what comes next. */
   onResult(s: SeasonState, _rec: MatchRecord): void {
-    const sb = this.sb;
-    if (!sb || !sameSeason(s, sb.season)) return;
-    sb.adopt(s);
-    this.save();
-    this.changed();
-    if (!isComplete(s)) void this.reprice();
-    else this.status = "ready";
+    this.guard(undefined, () => {
+      const sb = this.sb;
+      if (!sb || !sameSeason(s, sb.season)) return;
+      sb.adopt(s);
+      this.save();
+      this.changed();
+      if (!isComplete(s)) void this.reprice();
+      else this.status = "ready";
+    });
   }
 
   place(userId: string, marketId: string, selectionId: string, stake: number, minPrice: number): BetResult {
@@ -163,21 +187,35 @@ export class BettingDesk {
     this.progress = 0;
     this.changed();
     let shown = 0;
-    const finals = await this.pricer.rolloutsAsync(sb.season, async (frac) => {
-      await new Promise((r) => setTimeout(r, 0));
-      if (job !== this.job) return false;
-      this.progress = frac;
-      if (frac - shown >= 0.04) {
-        shown = frac;
-        this.changed("progress");
-      }
-      return true;
-    });
+    let failed = false;
+    const finals = await this.pricer
+      .rolloutsAsync(sb.season, async (frac) => {
+        await new Promise((r) => setTimeout(r, 0));
+        if (job !== this.job) return false;
+        this.progress = frac;
+        if (frac - shown >= 0.04) {
+          shown = frac;
+          this.changed("progress");
+        }
+        return true;
+      })
+      .catch((e) => {
+        console.error("[betting] pricing failed:", e);
+        failed = true;
+        return null;
+      });
+    if (failed && job === this.job) {
+      // No new prices: whatever was already open stays as it was, and the panel stops saying "pricing".
+      this.status = "ready";
+      this.changed();
+    }
     if (!finals || job !== this.job || this.sb !== sb) return;
-    sb.open(finals);
-    this.status = "ready";
-    this.progress = 1;
-    this.save();
-    this.changed();
+    this.guard(undefined, () => {
+      sb.open(finals);
+      this.status = "ready";
+      this.progress = 1;
+      this.save();
+      this.changed();
+    });
   }
 }

@@ -38,7 +38,19 @@ export class BettingPanel {
   private stake = 10;
   private msg: { text: string; ok: boolean } | null = null;
 
-  constructor(private desk: BettingDesk) {}
+  constructor(private desk: BettingDesk) {
+    // Typing a stake updates the slip in place; a repaint would take the cursor out of the field.
+    document.addEventListener("input", (ev) => {
+      const el = ev.target as HTMLInputElement | null;
+      if (el?.id !== "bt-stake") return;
+      const n = Math.floor(Number(el.value));
+      if (!Number.isFinite(n) || n < 1) return;
+      this.stake = n;
+      const price = Number(el.dataset.price);
+      const ret = document.querySelector(".bt-slip-ret b");
+      if (ret && price) ret.textContent = fmtCredits(Math.floor((n * price) / 100));
+    });
+  }
 
   /** Pricing progress moves many times a second: poke the bar instead of repainting the hub under the user's cursor. */
   progress(): boolean {
@@ -167,7 +179,7 @@ export class BettingPanel {
         <div class="bt-slip-what"><b>${esc(selectionText(m, q.selectionId))}</b><small>${esc(m.label)}</small></div>
         <span class="bt-slip-price">${odds(q.price)}</span>
         <div class="bt-slip-stake">
-          <input id="bt-stake" type="number" min="1" max="${q.maxStake}" step="1" value="${stake}" aria-label="Stake" />
+          <input id="bt-stake" type="number" min="1" max="${q.maxStake}" step="1" value="${stake}" data-price="${q.price}" aria-label="Stake" />
           ${chips}<button data-act="bet-stake" data-id="${q.maxStake}" ${q.maxStake ? "" : "disabled"}>Max ${q.maxStake}</button>
         </div>
         <span class="bt-slip-ret">returns <b>${fmtCredits(Math.floor((stake * q.price) / 100))}</b></span>

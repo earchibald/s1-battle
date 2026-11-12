@@ -14,7 +14,8 @@ import { LOSE, WIN, share, type Grade, type MarketKind, type MarketSpec } from "
  *   match_top2   Finish first or second. In the Last Chance match this is "to qualify".
  *   match_hcap   Handicap between two bots on match points (5/3/1/0 by place, +1 per elimination, +1 top
  *                damage). The line is added to the first bot's points; a tie after the line is a push.
- *   match_kos    Bots eliminated in the match, over or under a line.
+ *   match_time   Fight length in seconds, over or under a line set at the simulated median. A fight that
+ *                lasts exactly the line is a push.
  * PER ROUND (league weeks)
  *   round_top    Most league points scored in the week across both matches. Ties are a dead heat.
  * PER SEASON
@@ -29,7 +30,7 @@ export const KIND_LABEL: Record<MarketKind, string> = {
   match_win: "Match winner",
   match_top2: "Top two",
   match_hcap: "Points handicap",
-  match_kos: "Eliminations",
+  match_time: "Fight length",
   round_top: "Top scorer of the week",
   season_champion: "Champion",
   season_finalist: "To reach the Grand Final",
@@ -52,11 +53,11 @@ export function matchMarkets(seasonId: string, fx: Fixture): MarketSpec[] {
     { ...base, id: `${seasonId}/${fx.id}/top2`, kind: "match_top2", label: `${fx.label} · ${fx.stage === "lastchance" ? "To qualify" : "Top two"}`, winners: 2, selections: bots(fx.bots) },
     {
       ...base,
-      id: `${seasonId}/${fx.id}/kos`,
-      kind: "match_kos",
-      label: `${fx.label} · Eliminations`,
+      id: `${seasonId}/${fx.id}/time`,
+      kind: "match_time",
+      label: `${fx.label} · Fight length`,
       winners: 1,
-      params: { line2: 3 },
+      params: { line2: 91 },
       selections: [
         { id: "over", label: "Over" },
         { id: "under", label: "Under" },
@@ -118,10 +119,11 @@ export function gradeMarket(m: Pick<MarketSpec, "kind" | "fixtureId" | "round" |
       if (d === 0) return { [a!]: "void", [b!]: "void" };
       return { [a!]: d > 0 ? WIN : LOSE, [b!]: d < 0 ? WIN : LOSE };
     }
-    case "match_kos": {
+    case "match_time": {
       const rec = m.fixtureId ? recordFor(s, m.fixtureId) : undefined;
       if (!rec) return null;
-      const d = 2 * rec.rows.filter((r) => r.eliminated).length - (m.params.line2 ?? 0);
+      // Durations are recorded to a tenth of a second and the line is in half seconds: compare in twentieths.
+      const d = Math.round(rec.duration * 10) * 2 - (m.params.line2 ?? 0) * 10;
       if (d === 0) return { over: "void", under: "void" };
       return { over: d > 0 ? WIN : LOSE, under: d < 0 ? WIN : LOSE };
     }
@@ -155,7 +157,7 @@ export function selectionText(m: Pick<MarketSpec, "kind" | "params">, selectionI
     const l = m.params.line2 ?? 0;
     return `${selectionId} ${lineText(selectionId === m.params.a ? l : -l)}`;
   }
-  if (m.kind === "match_kos") return `${selectionId === "over" ? "Over" : "Under"} ${lineText(m.params.line2 ?? 0, false)}`;
+  if (m.kind === "match_time") return `${selectionId === "over" ? "Over" : "Under"} ${lineText(m.params.line2 ?? 0, false)}s`;
   if (m.kind === "season_hcap") {
     const h = m.params.handicaps?.[selectionId] ?? 0;
     return h ? `${selectionId} +${h}` : `${selectionId} (scratch)`;

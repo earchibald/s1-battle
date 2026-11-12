@@ -13,7 +13,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "probe": "tsx scripts/probe-jev.ts",
     "league": "tsx scripts/league/league.ts",
-    "improve": "scripts/league/loop.sh"
+    "improve": "scripts/league/loop.sh",
+    "bet:check": "tsx scripts/betting-check.ts",
+    "bet:sim": "tsx scripts/betting-sim.ts"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.7.0",

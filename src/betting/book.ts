@@ -24,7 +24,7 @@ import { sha256 } from "./sha256";
 export class BookError extends Error {}
 
 export type Scope = "match" | "round" | "season";
-export type MarketKind = "match_win" | "match_top2" | "match_hcap" | "match_kos" | "round_top" | "season_champion" | "season_finalist" | "season_league" | "season_hcap";
+export type MarketKind = "match_win" | "match_top2" | "match_hcap" | "match_time" | "round_top" | "season_champion" | "season_finalist" | "season_league" | "season_hcap";
 export type MarketStatus = "open" | "suspended" | "closed" | "settled" | "void";
 
 /** How a selection finished: the fraction of a full win it is paid at (1/1 win, 0/1 lose, 1/n dead heat), or void (stake back). */
@@ -37,7 +37,7 @@ export interface MarketParams {
   /** Handicap pair: the line is added to `a`'s score. */
   a?: string;
   b?: string;
-  /** A handicap or total line in half points (so 3 is 1.5), kept integral. */
+  /** A handicap line in half points, or a fight-length line in half seconds (so 3 is 1.5), kept integral. */
   line2?: number;
   /** Season handicap league: whole league points added to each bot. */
   handicaps?: Record<string, number>;

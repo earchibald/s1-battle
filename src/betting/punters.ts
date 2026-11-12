@@ -10,7 +10,7 @@ import type { SeasonBook } from "./seasonBook";
  *   favourite  Backs the shortest price in every match.
  *   longshot   Backs the longest price in every match and for the title.
  *   fan        Backs one bot whenever it fights, and for the title.
- *   handicap   Plays the handicap and totals lines, picking sides at random.
+ *   handicap   Plays the handicap and fight-length lines, picking sides at random.
  *   sharp      Has its own, better-sampled model of the game and bets only where the offered price beats it.
  *              Several sharps share one model: a syndicate spreading stakes over accounts.
  *   whale      Many accounts all hammering the favourite at the maximum stake, to drive a selection into its
@@ -109,7 +109,7 @@ export class Punter {
       }
       case "handicap": {
         for (const m of open) {
-          if (!["match_hcap", "match_kos", "season_hcap", "round_top"].includes(m.kind) || !once(m) || w.rand() < 0.5) continue;
+          if (!["match_hcap", "match_time", "season_hcap", "round_top"].includes(m.kind) || !once(m) || w.rand() < 0.5) continue;
           const qs = offers(m);
           if (qs.length) this.place(w, m, pick(qs), bank * 0.03);
         }

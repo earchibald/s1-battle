@@ -48,7 +48,7 @@ export const DEFAULT_PRICING: PricingConfig = {
   rollouts: 1200,
   seed: 20261111,
   z: 0.5,
-  margin: { match_win: 0.05, match_top2: 0.05, match_hcap: 0.04, match_kos: 0.04, round_top: 0.08, season_champion: 0.08, season_finalist: 0.06, season_league: 0.08, season_hcap: 0.08 },
+  margin: { match_win: 0.05, match_top2: 0.05, match_hcap: 0.04, match_time: 0.04, round_top: 0.08, season_champion: 0.08, season_finalist: 0.06, season_league: 0.08, season_hcap: 0.08 },
   maxPrice: { match: 3400, round: 5100, season: 10100 },
   maxImplied: 0.97,
 };
@@ -178,8 +178,8 @@ export class Pricer {
   }
 
   /**
-   * Set a market's line from the rollouts: the handicap or total closest to an even contest, on half points
-   * so it cannot push, and the season head starts that level the league. Returns a new spec.
+   * Set a market's line from the rollouts: the handicap closest to an even contest (on half points, so it
+   * cannot push), the median fight length, and the season head starts that level the league. Returns a new spec.
    */
   fit(spec: MarketSpec, finals: SeasonState[]): MarketSpec {
     const evenLine = (diffs: number[], lines: number[]) => {
@@ -202,13 +202,16 @@ export class Pricer {
       for (let l = -(2 * MAX_MATCH_POINTS - 1); l <= 2 * MAX_MATCH_POINTS - 1; l += 2) lines.push(l);
       return { ...spec, params: { ...spec.params, line2: evenLine(diffs, lines) } };
     }
-    if (spec.kind === "match_kos") {
-      const diffs: number[] = [];
+    if (spec.kind === "match_time") {
+      const secs: number[] = [];
       for (const st of finals) {
         const rec = recordFor(st, spec.fixtureId!);
-        if (rec) diffs.push(2 * rec.rows.filter((r) => r.eliminated).length);
+        if (rec) secs.push(rec.duration);
       }
-      return { ...spec, params: { ...spec.params, line2: -evenLine(diffs, [-1, -3, -5, -7]) } };
+      if (!secs.length) return spec;
+      secs.sort((x, y) => x - y);
+      // The median, on a half second so most fights fall clearly one side of it.
+      return { ...spec, params: { ...spec.params, line2: 2 * Math.floor(secs[secs.length >> 1]) + 1 } };
     }
     if (spec.kind === "season_hcap") {
       const mean = new Map<string, number>();

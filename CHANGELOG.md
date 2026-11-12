@@ -12,6 +12,13 @@ release and add a section here; the page shows the newest section.
   elimination, 60 through Last Chance, 300 / 120 / 60 / 30 in the Grand Final) into the same wallet they bet
   from. The Users screen shows the wallet's ledger and each designer's record. Your existing Garage and library
   carry over to the first user.
+- **Season betting** (the Betting panel in the season hub). Back a bot to win a match or finish in the top two,
+  take either side of a points handicap between any two bots, bet fight length over or under, pick the week's
+  top scorer, or bet the season: champion, finalist, league winner, and a handicap league where every bot gets a
+  head start. Prices are worked out by simulating the rest of the season on the real engine and shorten as money
+  comes in; season prices move after every match. Bets come out of your wallet and winnings go back into it.
+  Betting on a match closes when it starts, and its seed is sealed until then. A user with fewer than ◈ 100 at
+  the start of a season is topped up to it. How it is built and tested: `docs/betting.md`.
 
 ## 0.2.0 — 2026-11-09
 
