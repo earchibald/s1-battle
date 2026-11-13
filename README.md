@@ -211,7 +211,10 @@ Every season has a book on it (the **Betting** panel in the season hub; design a
 against a simulated public of 40 bettors, including a sharp syndicate with a better model than the house, many
 accounts hammering one selection, and a fuzzer, and reports the house's result, each kind of bettor's return, the
 calibration of the prices, and whether any integrity check failed. The same engine runs as a local house server
-with minimal registration (a handle and a bearer token) under `/api/bet` (`server/betting.ts`).
+with minimal registration (a handle and a bearer token) under `/api/bet` (`server/betting.ts`). There a user can
+also enter one Garage build (`PUT /api/bet/bot`): it joins the next server season under its designer's handle and
+pays prize money into the wallet they bet from. The server prices in slices so it keeps taking bets, and plays
+its seasons on a clock when `BET_MATCH_EVERY` is set. `npm run bet:house` checks it end to end over HTTP.
 
 ## How a decision works
 
@@ -246,7 +249,8 @@ option and plays each one out (`scripts/train/`).
 shared/      types; build.ts (builds, parts, costs, derived stats, condition language, BotLogic);
              logic.ts (rule-tree interpreter, Jev gates/questions); bots/ (the seven stock builds). Browser + server.
 server/      Express: /api/decide proxies Jev (key stays server-side), /api/health, /api/stats;
-             betting.ts (/api/bet: the house as a local server, handle + token registration, state in data/betting)
+             betting.ts (/api/bet: the house as a local server, handle + token registration, designers' entered
+             bots and their prize money, sliced pricing, the match clock, state in data/betting)
 src/sim/     deterministic simulation: physics, weapons, hazards and traps, perception, controller, match rules, quicksim
 src/brain/   decision scheduler (cadence, event nudges, stale-answer guard, fallback); trained/ (network + style policy)
 src/render/  Three.js arena (pit, saws, vents, launch pad, shock plates), procedural bot models (armor plates, wheel size and rig scale follow the build)
@@ -263,7 +267,9 @@ src/betting/ ledger.ts (double-entry, hash-chained), book.ts (markets, bets, lim
 src/audio/   procedural Web Audio sound engine (no asset files)
 scripts/     probe-jev.ts (latency check), headless.ts (tournaments; stock kinds or a garage export), balance.ts (win share sweep)
              season-sim.ts (a whole season, headless), account-check.ts (wallet, ownership, prizes)
-             betting-check.ts (engine correctness), betting-sim.ts (whole seasons against simulated bettors)
+             betting-check.ts (engine correctness), betting-sim.ts (whole seasons against simulated bettors),
+             house-check.ts (the house server end to end over HTTP)
+             dump-corpus.ts, compare-backends.ts, d1/ (the local d1 evaluation: docs/d1-local-eval.md)
              train/ (rollout data generation, PyTorch training, parity/fork checks, brain-vs-brain tournaments)
              league/ (improvement loop: paired matches, SPRT promotion gate, Bradley–Terry ladder, curriculum)
 public/models/trained-brain.json   the shipped trained-brain weights (league model g3b, float16, ~390 KB)

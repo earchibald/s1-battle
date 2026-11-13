@@ -113,17 +113,22 @@ export class Pricer {
     this.sims++;
   }
 
-  private draw(s: SeasonState, fx: Fixture, real: boolean): MatchOutcome {
+  /** Draw one outcome for a lineup, topping its pool up first. Yields after every match it has to simulate. */
+  private *draw(s: SeasonState, fx: Fixture, real: boolean): Generator<void, MatchOutcome> {
     const { pool, lineup } = this.poolOf(s, fx, real);
     pool.hits++;
     const want = real ? this.config.poolSize : Math.min(this.config.hypoMax, 4 + (pool.hits >> 2));
-    while (pool.outs.length < want) this.simInto(s, fx, lineup, pool);
+    while (pool.outs.length < want) {
+      this.simInto(s, fx, lineup, pool);
+      yield;
+    }
     return pool.outs[Math.floor(this.rand() * pool.outs.length)];
   }
 
   /**
    * The pricing job as resumable steps: fill the pools of the fixtures that exist, one match at a time, then
-   * roll the season out. Yields its progress (0..1) after each step, so a caller can run it in slices.
+   * roll the season out. Yields its progress (0..1) after every simulated match and every rollout, so a caller
+   * can run it in slices no longer than one match.
    */
   private *work(s: SeasonState): Generator<number, SeasonState[]> {
     const real = new Set(s.fixtures.map((f) => f.id));
@@ -143,7 +148,14 @@ export class Pricer {
       while (!isComplete(st)) {
         const fx = nextFixture(st);
         if (!fx) break;
-        st = applyResult(st, fx.id, this.draw(s, fx, real.has(fx.id)), true, true);
+        // A playoff lineup seen for the first time costs a few matches: hand control back between them.
+        const drawing = this.draw(s, fx, real.has(fx.id));
+        let drawn = drawing.next();
+        while (!drawn.done) {
+          yield Math.min(1, (toSim + i / 25) / total);
+          drawn = drawing.next();
+        }
+        st = applyResult(st, fx.id, drawn.value, true, true);
       }
       out.push(st);
       yield Math.min(1, (toSim + (i + 1) / 25) / total);

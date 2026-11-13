@@ -225,8 +225,34 @@ defence. It becomes a defence on a server.
 | `GET /me` | wallet and bets |
 | `GET /season` | table, fixtures, fairness records, live markets with prices and the caller's maximum stakes |
 | `POST /bets {key, marketId, selectionId, stake, minPrice?}` | the bet, or a typed rejection |
+| `GET /bot`, `PUT /bot {build}`, `DELETE /bot` | the caller's entered bot: see it, enter or replace it, withdraw it |
 | `GET /leaderboard`, `GET /audit` | balances; the full audit run on request |
-| `POST /advance` | development: lock, play and settle the next match, or start the next season |
+| `POST /advance` | development: lock, play and settle the next match, or start the next season (`?wait=1` answers once the next round is priced) |
+
+`GET /season` also lists the league's entrants with their designers, the progress of a pricing run in hand
+(`pricing`), and when the clock plays the next match (`nextMatchAt`).
+
+**Pricing does not hold the server up.** A pricing run goes in slices no longer than one simulated match (tens
+of milliseconds) between other requests, on the same resumable job the browser uses, so bets on markets that
+are already open keep being taken while the next round is priced. A round's markets open when its prices are
+ready. Matches, new seasons and pricing runs go through one queue and never overlap. A server that restarts
+between a result and its repricing notices the unpriced round and prices it.
+
+**Seasons can run on a clock.** With `BET_MATCH_EVERY=<seconds>` the house plays the next match on that
+interval, counted from the moment the previous round's markets opened, and waits `BET_SEASON_GAP` seconds
+(default: the same) between a Grand Final and the next season. Without it the season moves only on
+`POST /advance`.
+
+**Users enter their own bots.** `PUT /bot` takes a Garage build (the JSON the designer exports). It is
+normalised and validated exactly as the Garage does, must fit the budget, and needs a callsign of its own: 3 to
+16 capitals, digits, spaces or hyphens, not a house bot's and not another designer's. One bot per user. When a
+season starts, entries are frozen into it, longest-waiting designers first, and stock bots and wildcards fill
+the rest of the eight; an edit made mid-season plays from the next one. A designed bot pays its designer the
+prize money of `src/account/prizes.ts` after every match, minted into the wallet they bet from in the same step
+that records the result, so a match cannot pay twice. A designer may bet on their own bot: the price was
+simulated from the build that is actually playing.
+
+`npm run bet:house` checks all of this over real HTTP on a throwaway data directory (about a minute).
 
 One book and its wallets live across seasons. State is rewritten atomically after every change to
 `data/betting/state.json` (set `BET_DATA_DIR` to move it) and reloaded through the audit; a file that fails
@@ -239,13 +265,16 @@ betting still closed.
   handles; per-user limits therefore protect nobody, and the per-selection liability cap is the limit that
   holds (the simulator's whales and sharps are multi-account for this reason). Email or OAuth can attach to the
   same user id later without touching the book.
-- **The server prices on the request thread.** Opening a season blocks for some seconds. A deployed house should
-  price in a worker and should run seasons on a schedule rather than on `POST /advance`.
+- **The server prices on its one thread.** In slices, so it keeps answering, but a pricing run still takes its
+  ten to twenty seconds of that thread, and a request can wait for one match (tens of milliseconds). A house
+  with real traffic should move the pricer to a worker thread; the job is already a resumable generator.
 - **The house can grind the anchor in principle** by inserting its own bets before a lock. Play money makes that
   pointless; with anything of value at stake, anchor to an outside randomness beacon as well.
 - **Different JavaScript engines may differ in the last bit of a trig function**, so a browser replay of a
   server match could in principle diverge. The server's result is authoritative; replays should be verified on
   the same runtime, or the sim moved to fixed-point trig.
-- **User-designed bots in server seasons.** The server enters the stock bots and house wildcards. Entrants
-  already carry an owner, so designer-entered bots are a registration and submission feature, not a betting one.
+- **No screen for the server house.** The game's Betting panel runs the local book; the server is an API. A
+  client that signs in, bets and sends a Garage build to `PUT /bot` is the next piece.
+- **More entries than places is settled by waiting time alone.** One bot per user and eight places a season;
+  with many handles one person can still fill a league. Qualifying rounds or an entry fee would fix that.
 - **No accumulators, no cash-out, no in-play betting.** Deliberately.
