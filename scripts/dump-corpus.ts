@@ -4,7 +4,8 @@
  * lose health (or get eliminated) within the next HORIZON seconds of sim time. Usage: npx tsx scripts/dump-corpus.ts [out] [matches] [every]
  */
 import { writeFileSync } from "node:fs";
-import { BOT_DEFS, buildQuestions } from "../shared/bots/index";
+import { BOT_DEFS, DEFAULT_ROSTER } from "../shared/bots/index";
+import { buildQuestions } from "../shared/logic";
 import { World } from "../src/sim/world";
 import { sense } from "../src/sim/perception";
 
@@ -18,7 +19,7 @@ const HORIZON = 1.5;
 const rows: Record<string, unknown>[] = [];
 let n = 0;
 for (let m = 0; m < matches; m++) {
-  const order = Object.values(BOT_DEFS);
+  const order = DEFAULT_ROSTER.map((k) => BOT_DEFS[k]);
   const lineup = order.map((_, i) => order[(i + m) % order.length]);
   const w = new World(lineup, 100 + m);
   const timers = new Map(w.bots.map((b, i) => [b.id, (i / w.bots.length) * CADENCE]));
@@ -42,7 +43,7 @@ for (let m = 0; m < matches; m++) {
       const s = sense(b, w.bots, w.fightTime, w.timeLeft);
       b.intent = b.def.baseline(s);
       if (n++ % every === 0) {
-        const row = { kind: b.def.kind, sense: s, questions: buildQuestions(b.def, s), baseline: b.intent, hitSoon: false };
+        const row = { kind: b.def.kind, sense: s, questions: buildQuestions(b.def.build, s), baseline: b.intent, hitSoon: false };
         rows.push(row);
         pending.push({ row, bot: b, hp: b.hp, until: w.fightTime + HORIZON });
       }
