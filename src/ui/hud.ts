@@ -7,6 +7,7 @@ import { BUILD_TIME, VERSION, VERSION_LABEL } from "../version";
 import { fullscreenSupported, onFullscreenChange } from "./fullscreen";
 import changelog from "../../CHANGELOG.md?raw";
 import { EventLog, type LogInput } from "./eventlog";
+import { helpRows, keyHint, PILOT_KEYS, type KeyAction } from "./keymap";
 
 export interface HudCallbacks {
   toggleBrain(botId: string): void;
@@ -144,17 +145,18 @@ export class Hud {
       </div>
       <div class="hud-ticker" id="hud-ticker"></div>
       <div class="hud-controls" id="hud-controls">
-        <button data-k="pause" title="Space">⏸ Pause</button>
-        <div class="seg"><button data-k="s05">½×</button><button data-k="s1" class="on">1×</button><button data-k="s2">2×</button></div>
-        <button data-k="cam" title="C">🎥 Auto cam</button>
-        <button data-k="debug" title="D">◎ Debug</button>
-        <button data-k="sound" title="M">🔊</button>
-        <button data-k="fullscreen" title="Fullscreen (F)" aria-label="Fullscreen">⛶</button>
-        <div class="seg"><button data-k="alljev" title="J">All Jev</button><button data-k="alltrained" title="T">All Trained</button><button data-k="allbase" title="B">All Baseline</button></div>
-        <button data-k="account" class="account" title="Users: wallet and designer record (P)"><i></i><b></b><span></span></button>
-        <button data-k="garage" class="garage" title="G">🛠 Garage</button>
-        <button data-k="season" class="season" title="S">🏆 Season</button>
-        <button data-k="new" class="primary" title="N">⟳ New match</button>
+        <button data-k="pause" data-key="pause">⏸ Pause</button>
+        <div class="seg"><button data-k="s05" data-key="slower">½×</button><button data-k="s1" class="on">1×</button><button data-k="s2" data-key="faster">2×</button></div>
+        <button data-k="cam" data-key="camera">🎥 Auto cam</button>
+        <button data-k="debug" data-key="debug">◎ Debug</button>
+        <button data-k="sound" data-key="mute">🔊</button>
+        <button data-k="fullscreen" data-key="fullscreen" data-name="Fullscreen" aria-label="Fullscreen">⛶</button>
+        <button data-k="keys" data-key="help" data-name="Keyboard controls">? Keys</button>
+        <div class="seg"><button data-k="alljev" data-key="allJev">All Jev</button><button data-k="alltrained" data-key="allTrained">All Trained</button><button data-k="allbase" data-key="allBaseline">All Baseline</button></div>
+        <button data-k="account" class="account" data-key="users" data-name="Users: wallet and designer record"><i></i><b></b><span></span></button>
+        <button data-k="garage" class="garage" data-key="garage">🛠 Garage</button>
+        <button data-k="season" class="season" data-key="season">🏆 Season</button>
+        <button data-k="new" class="primary" data-key="newMatch">⟳ New match</button>
       </div>
       <div class="hud-result hidden" id="hud-result"></div>
       <div class="hud-news hidden" id="hud-news"></div>
@@ -176,7 +178,10 @@ export class Hud {
     this.log = new EventLog(root, () => this.logClock(), (open) => root.classList.toggle("log-open", open));
     root.querySelectorAll<HTMLButtonElement>("#hud-controls button").forEach((b) => {
       this.controls[b.dataset.k!] = b;
+      const action = b.dataset.key as KeyAction | undefined;
+      if (action) b.title = b.dataset.name ? `${b.dataset.name} (${keyHint(action)})` : keyHint(action);
     });
+    this.controls.keys.onclick = () => this.toggleKeys();
     this.controls.pause.onclick = () => cb.togglePause();
     this.controls.s05.onclick = () => cb.setSpeed(0.5);
     this.controls.s1.onclick = () => cb.setSpeed(1);
@@ -195,7 +200,7 @@ export class Hud {
     if (!fullscreenSupported) this.controls.fullscreen.style.display = "none";
     onFullscreenChange((on) => {
       this.controls.fullscreen.classList.toggle("on", on);
-      this.controls.fullscreen.title = on ? "Exit fullscreen (F or Esc)" : "Fullscreen (F)";
+      this.controls.fullscreen.title = on ? `Exit fullscreen (${keyHint("fullscreen")} or Esc)` : `Fullscreen (${keyHint("fullscreen")})`;
     });
   }
 
@@ -282,12 +287,29 @@ export class Hud {
     this.world = world;
   }
 
+  /** The keyboard map (H or ?), in the same slot as What's new. */
+  toggleKeys() {
+    this.togglePanel("keys", renderKeys);
+  }
+
+  /** Esc: close the key list or What's new if either is up. True when something closed. */
+  closePanel(): boolean {
+    if (this.newsEl.classList.contains("hidden")) return false;
+    this.newsEl.classList.add("hidden");
+    return true;
+  }
+
   private toggleNews() {
-    if (!this.newsEl.classList.contains("hidden")) {
+    this.togglePanel("news", renderNews);
+  }
+
+  private togglePanel(panel: string, render: () => HTMLElement) {
+    if (!this.newsEl.classList.contains("hidden") && this.newsEl.dataset.panel === panel) {
       this.newsEl.classList.add("hidden");
       return;
     }
-    this.newsEl.replaceChildren(renderNews());
+    this.newsEl.replaceChildren(render());
+    this.newsEl.dataset.panel = panel;
     this.newsEl.classList.remove("hidden");
   }
 
@@ -524,6 +546,41 @@ function statusLine(bot: Bot): string {
   }
 }
 export { ARENA };
+
+/** The keyboard map as a card: the arena keys from the keymap table, then the keys held back for piloting. */
+function renderKeys(): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "news-card keys-card";
+  const h = document.createElement("div");
+  h.className = "news-head";
+  h.textContent = "Keyboard";
+  const close = document.createElement("button");
+  close.className = "news-close";
+  close.textContent = "✕";
+  close.onclick = () => card.parentElement?.classList.add("hidden");
+  h.append(close);
+  card.append(h);
+  const grid = document.createElement("div");
+  grid.className = "keys-grid";
+  const section = (title: string, rows: { keys: string[]; label: string }[]) => {
+    const sec = document.createElement("section");
+    sec.append(Object.assign(document.createElement("h4"), { textContent: title }));
+    for (const r of rows) {
+      const row = document.createElement("div");
+      row.className = "keys-row";
+      const ks = document.createElement("span");
+      ks.className = "keys-keys";
+      for (const k of r.keys) ks.append(Object.assign(document.createElement("kbd"), { textContent: k }));
+      row.append(ks, Object.assign(document.createElement("span"), { textContent: r.label }));
+      sec.append(row);
+    }
+    grid.append(sec);
+  };
+  for (const g of helpRows()) section(g.group, g.rows);
+  section("Pilot (reserved)", PILOT_KEYS);
+  card.append(grid);
+  return card;
+}
 
 /** The newest CHANGELOG.md section as DOM: heading, then bullets with **bold** and `code`. */
 function renderNews(): HTMLElement {

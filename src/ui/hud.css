@@ -239,6 +239,11 @@ button.garage:hover { background: rgba(200,176,106,.26); }
 .news-card ul { margin: 10px 0 4px; padding-left: 18px; display: flex; flex-direction: column; gap: 7px; }
 .news-card b { color: #fff; }
 .news-card code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.08); border-radius: 4px; padding: 0 4px; }
+.keys-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 6px 22px; margin-top: 10px; }
+.keys-grid h4 { margin: 6px 0 4px; font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.keys-row { display: grid; grid-template-columns: 92px 1fr; align-items: baseline; gap: 10px; padding: 2px 0; }
+.keys-keys { display: flex; flex-wrap: wrap; gap: 4px; }
+.keys-card kbd { font-family: var(--mono); font-size: 11px; color: #fff; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.18); border-bottom-width: 2px; border-radius: 5px; padding: 0 5px; white-space: nowrap; }
 .news-older { margin-top: 8px; font-size: 11px; color: var(--muted); }
 
 /* event log: a tab in the lower right; opens into a scrollable, searchable, filterable panel */
