@@ -3,6 +3,16 @@
 The version shows in the arena's top bar (click it for this list). Bump `version` in package.json for each
 release and add a section here; the page shows the newest section.
 
+## 0.3.1 — 2026-11-12
+
+- **The house server takes your bots.** A registered user can enter one Garage build (`PUT /api/bet/bot`). It
+  joins the next server season under its designer's handle, the house's bots fill the rest of the league, and it
+  pays its designer prize money into their betting wallet after every match.
+- **The house server no longer stalls while it prices.** Pricing a round runs in slices between requests, so
+  bets keep being taken; a restart in the middle of it is picked up. `BET_MATCH_EVERY` makes the house play its
+  seasons on a clock. `npm run bet:house` checks the server end to end.
+- The local d1 evaluation (`docs/d1-local-eval.md`) and its scripts are in the main line.
+
 ## 0.3.0 — 2026-11-11
 
 - **Users** (`P` or your name on the control bar). Everyone at the machine is a user with their own wallet of

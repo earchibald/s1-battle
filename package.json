@@ -1,6 +1,6 @@
 {
   "name": "s1-battle",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "Robot arena where four combat bots fight using realtime Jev (TypeSafe System One) decisions",
@@ -15,7 +15,8 @@
     "league": "tsx scripts/league/league.ts",
     "improve": "scripts/league/loop.sh",
     "bet:check": "tsx scripts/betting-check.ts",
-    "bet:sim": "tsx scripts/betting-sim.ts"
+    "bet:sim": "tsx scripts/betting-sim.ts",
+    "bet:house": "tsx scripts/house-check.ts"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.7.0",
