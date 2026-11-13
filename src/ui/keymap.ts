@@ -47,8 +47,8 @@ interface Binding {
 export const BINDINGS: Binding[] = [
   { action: "pause", group: "Match", label: "Pause / resume", keys: ["P", "Esc"], letters: ["p"], named: ["Pause"] },
   { action: "newMatch", group: "Match", label: "New match", keys: ["N"], letters: ["n"] },
-  { action: "slower", group: "Match", label: "Slower (½× · 1× · 2×)", keys: ["−"], codes: ["Minus", "NumpadSubtract"] },
-  { action: "faster", group: "Match", label: "Faster", keys: ["="], codes: ["Equal", "NumpadAdd"] },
+  { action: "slower", group: "Match", label: "Slower (½× · 1× · 2×)", keys: ["−"], codes: ["Minus"] },
+  { action: "faster", group: "Match", label: "Faster", keys: ["="], codes: ["Equal"] },
   { action: "camera", group: "View", label: "Auto / free camera", keys: ["V"], letters: ["v"] },
   { action: "fullscreen", group: "View", label: "Fullscreen", keys: ["F11", "Alt+Enter"], named: ["F11"] },
   { action: "fullscreen", group: "View", label: "", keys: [], named: ["Enter"], alt: true },
@@ -68,8 +68,8 @@ export const BINDINGS: Binding[] = [
 /**
  * Keys held back for piloting (see the pilot-mode plan): player one drives on WASD or the arrows, fires on Space,
  * boosts on Shift, releases a grip on E, cycles target on Q; R, F and C are kept free for more pilot actions.
- * Nothing in BINDINGS may use them. Space and the arrows are swallowed so they never scroll the page or press
- * a focused button.
+ * Nothing in BINDINGS may use them, and the numeric keypad stays unbound for a second pilot on the same keyboard
+ * (arrows plus keypad). Space and the arrows are swallowed so they never scroll the page or press a focused button.
  */
 export const PILOT_RESERVED = new Set([
   "KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "KeyR", "KeyF", "KeyC",
