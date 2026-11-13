@@ -17,6 +17,10 @@ export function loadSeason(): SeasonState | null {
       const b = normalizeBuild(e.build, stockBuild, e.build?.id ?? "season");
       if (b.name !== e.id) return null;
       e.build = b;
+      // The designer is optional (older saves have none); anything malformed is dropped rather than trusted.
+      const o = e.owner as { id?: unknown; name?: unknown } | undefined;
+      if (o && typeof o.id === "string" && o.id && typeof o.name === "string") e.owner = { id: o.id, name: o.name.slice(0, 16) };
+      else delete e.owner;
     }
     const ids = new Set(s.entrants.map((e) => e.id));
     if (ids.size !== LEAGUE_SIZE || s.fixtures.some((f) => !Array.isArray(f.bots) || f.bots.length !== 4 || f.bots.some((id) => !ids.has(id)))) return null;

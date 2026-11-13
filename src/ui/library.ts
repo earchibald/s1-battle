@@ -1,16 +1,23 @@
 import type { BotBuild } from "@shared/build";
 import { cloneBuild, normalizeBuild } from "@shared/build";
 import { stockBuild } from "@shared/bots/index";
+import { accounts } from "../account/accounts";
 
 /**
  * The Garage's saved work: named builds and whole rosters, persisted in localStorage next to the live
  * roster. Everything is normalized on the way in, so a hand-edited or older file cannot break the UI.
+ *
+ * Every saved build is signed with the user who designed it (a profile id from src/account/accounts.ts).
+ * Builds saved before accounts existed are adopted by the first profile. One library holds everyone's
+ * builds, so a season can field bots from several designers.
  */
 
 export interface SavedBuild {
   id: string;
   savedAt: number;
   build: BotBuild;
+  /** The designer's profile id. A build whose designer has been deleted keeps the stale id and belongs to nobody. */
+  ownerId: string;
 }
 export interface SavedRoster {
   id: string;
@@ -35,10 +42,18 @@ export class Library {
       const raw = localStorage.getItem(KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw) as { builds?: unknown[]; rosters?: unknown[] };
+      // Builds from before accounts are signed over to the first profile, and that is written back at once
+      // (below) so the adoption happens exactly once, whoever is first in the list later.
+      const unsigned = (Array.isArray(parsed.builds) ? parsed.builds : []).some((x) => x && typeof x === "object" && typeof (x as Partial<SavedBuild>).ownerId !== "string");
       this.builds = (Array.isArray(parsed.builds) ? parsed.builds : [])
         .map((x) => x as Partial<SavedBuild>)
         .filter((x) => x && typeof x === "object" && x.build)
-        .map((x) => ({ id: typeof x.id === "string" ? x.id : `lib-${uid()}`, savedAt: Number(x.savedAt) || Date.now(), build: normalizeBuild(x.build, stockBuild, "library") }));
+        .map((x) => ({
+          id: typeof x.id === "string" ? x.id : `lib-${uid()}`,
+          savedAt: Number(x.savedAt) || Date.now(),
+          build: normalizeBuild(x.build, stockBuild, "library"),
+          ownerId: typeof x.ownerId === "string" && x.ownerId ? x.ownerId : accounts.profiles[0].id,
+        }));
       this.rosters = (Array.isArray(parsed.rosters) ? parsed.rosters : [])
         .map((x) => x as Partial<SavedRoster>)
         .filter((x) => x && typeof x === "object" && Array.isArray(x.builds))
@@ -48,6 +63,7 @@ export class Library {
           savedAt: Number(x.savedAt) || Date.now(),
           builds: (x.builds as unknown[]).slice(0, 4).map((b, i) => normalizeBuild(b, stockBuild, `slot-${i}`)),
         }));
+      if (unsigned) this.persist();
     } catch {
       this.builds = [];
       this.rosters = [];
@@ -62,20 +78,33 @@ export class Library {
     }
   }
 
-  /** Save a build under its callsign. A saved build with the same name (case-insensitive) is replaced. */
-  saveBuild(build: BotBuild): { saved: SavedBuild; replaced: boolean } {
+  /** The builds a user designed, newest first. */
+  buildsOf(ownerId: string): SavedBuild[] {
+    return this.builds.filter((s) => s.ownerId === ownerId);
+  }
+
+  /** Another designer already holding this callsign, if any (callsigns are unique within a season). */
+  rivalHolding(name: string, ownerId: string): SavedBuild | undefined {
+    return this.builds.find((s) => s.ownerId !== ownerId && s.build.name.toLowerCase() === name.toLowerCase());
+  }
+
+  /**
+   * Save a build under its callsign, signed by its designer (default: the active user). The designer's own
+   * saved build with the same name (case-insensitive) is replaced; other designers' builds are never touched.
+   */
+  saveBuild(build: BotBuild, ownerId: string = accounts.active().id): { saved: SavedBuild; replaced: boolean } {
     const copy = cloneBuild(build);
-    const i = this.builds.findIndex((s) => s.build.name.toLowerCase() === copy.name.toLowerCase());
-    const saved: SavedBuild = { id: i >= 0 ? this.builds[i].id : `lib-${uid()}`, savedAt: Date.now(), build: { ...copy, id: i >= 0 ? this.builds[i].id : `lib-${uid()}` } };
-    saved.build.id = saved.id;
+    const i = this.builds.findIndex((s) => s.ownerId === ownerId && s.build.name.toLowerCase() === copy.name.toLowerCase());
+    const id = i >= 0 ? this.builds[i].id : `lib-${uid()}`;
+    const saved: SavedBuild = { id, savedAt: Date.now(), build: { ...copy, id }, ownerId };
     if (i >= 0) this.builds[i] = saved;
     else this.builds.unshift(saved);
     this.persist();
     return { saved, replaced: i >= 0 };
   }
 
-  /** Add builds from an export without replacing anything: name clashes get a numeric suffix. */
-  addBuilds(list: unknown[]): number {
+  /** Add builds from an export without replacing anything: name clashes get a numeric suffix. The importer becomes their designer. */
+  addBuilds(list: unknown[], ownerId: string = accounts.active().id): number {
     let n = 0;
     for (const raw of list) {
       const b = normalizeBuild(raw, stockBuild, "library");
@@ -84,7 +113,7 @@ export class Library {
       while (this.builds.some((s) => s.build.name.toLowerCase() === name.toLowerCase())) name = `${b.name.slice(0, 12)} ${k++}`;
       b.name = name;
       const id = `lib-${uid()}`;
-      this.builds.unshift({ id, savedAt: Date.now(), build: { ...b, id } });
+      this.builds.unshift({ id, savedAt: Date.now(), build: { ...b, id }, ownerId });
       n++;
     }
     this.persist();

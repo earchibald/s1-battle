@@ -1,7 +1,6 @@
 import * as THREE from "three";
-import { DEFAULT_ROSTER, stockBuild } from "@shared/bots/index";
 import type { BotBuild } from "@shared/build";
-import { cloneBuild, normalizeBuild } from "@shared/build";
+import { cloneBuild } from "@shared/build";
 import { defFromBuild } from "@shared/logic";
 import { BRAIN_MODES, Brain, type BrainMode } from "./brain/brains";
 import { TrainedNet, type ModelFile } from "./brain/trained/net";
@@ -18,6 +17,12 @@ import { CalloutDirector } from "./ui/calloutPolicy";
 import { Designer, uniqueNamed } from "./ui/designer";
 import { SoundEngine } from "./audio/sound";
 import { SeasonMode } from "./season/seasonUi";
+import { accounts, fmtCredits } from "./account/accounts";
+import { AccountPanel } from "./account/accountUi";
+import { adoptLegacyRoster, loadRosterFor, saveRosterFor } from "./account/garage";
+import { prizesFor } from "./account/prizes";
+import { BettingDesk } from "./betting/desk";
+import { BettingPanel } from "./betting/deskUi";
 import { pitPhase, sawRaise } from "./sim/arena";
 import { toggleFullscreen } from "./ui/fullscreen";
 import type { HammerPhase } from "./sim/bot";
@@ -26,7 +31,7 @@ import type { BotKind, Maneuver } from "@shared/types";
 /**
  * S1 Arena entry point. Fixed-step simulation, async brains, Three.js rendering, HTML HUD, and the Garage
  * (designer) overlay. Keyboard: Space pause · N new match · C camera · D debug · M mute · 1/2/3 speed ·
- * J/T/B all Jev/trained/baseline · G garage · S season · F fullscreen.
+ * J/T/B all Jev/trained/baseline · G garage · S season · P users · F fullscreen.
  */
 
 const FIXED_DT = 1 / 60;
@@ -73,27 +78,14 @@ let slotBots: string[] = [];
 
 /* ---------------------------------------------------------------- roster / garage ---------------- */
 
-const GARAGE_KEY = "s1.garage.v1";
-function loadRoster(): BotBuild[] {
-  const stock = DEFAULT_ROSTER.map((k, i) => ({ ...stockBuild(k), id: `slot-${i}` }));
-  try {
-    const raw = localStorage.getItem(GARAGE_KEY);
-    if (!raw) return stock;
-    const parsed = JSON.parse(raw) as { builds?: unknown[] };
-    if (!Array.isArray(parsed.builds)) return stock;
-    return stock.map((s, i) => (parsed.builds![i] ? normalizeBuild(parsed.builds![i], stockBuild, `slot-${i}`) : s));
-  } catch {
-    return stock;
-  }
-}
+// The Garage belongs to the user at the controls (src/account/): `roster` is always the active user's four
+// slots, swapped in place when the user changes so the Garage and season screens keep their reference.
+adoptLegacyRoster(accounts.profiles[0].id);
+let rosterOwner = accounts.active().id;
+const roster = loadRosterFor(rosterOwner);
 function saveRoster(builds: BotBuild[]) {
-  try {
-    localStorage.setItem(GARAGE_KEY, JSON.stringify({ version: 1, builds }));
-  } catch {
-    /* private mode etc.: the roster just lives for this session */
-  }
+  saveRosterFor(rosterOwner, builds);
 }
-const roster = loadRoster();
 
 let toastEl: HTMLElement | null = null;
 let toastTimer = 0;
@@ -183,9 +175,76 @@ const hud = new Hud(document.getElementById("hud")!, {
     sound.uiClick();
     season.toggle();
   },
+  toggleAccount() {
+    sound.uiClick();
+    account.toggle();
+  },
 });
+/** Season betting (src/betting/): the book on the season in progress, staked from the users' wallets. */
+const desk: BettingDesk = new BettingDesk((what) => {
+  // Pricing progress ticks many times a second: move the bar in place rather than repainting under the cursor.
+  if (what === "progress" && betting.progress()) return;
+  season.repaint();
+});
+const betting = new BettingPanel(desk);
 /** Season arc (src/season/): while season.playing, startMatch runs its fixtures and match ends feed its table. */
-const season = new SeasonMode({ roster, startMatch: () => startMatch(), ticker: (text, cls) => hud.ticker(text, cls), toast, click: () => sound.uiClick() });
+const season: SeasonMode = new SeasonMode({
+  roster,
+  startMatch: () => startMatch(),
+  ticker: (text, cls) => hud.ticker(text, cls),
+  toast,
+  click: () => sound.uiClick(),
+  onSeasonStart(s) {
+    for (const e of s.entrants) if (e.owner) accounts.bumpDesigner(e.owner.id, { entered: 1 });
+    desk.start(s);
+  },
+  // Everything a recorded season match settles for the users goes here: designer prizes and career records.
+  onResult(s, rec) {
+    const paid = prizesFor(s, rec);
+    for (const p of paid) accounts.credit(p.ownerId, p.amount, "prize", p.note, rec.fixtureId);
+    for (const row of rec.rows) {
+      const owner = s.entrants.find((e) => e.id === row.id)?.owner;
+      if (owner) accounts.bumpDesigner(owner.id, { matches: 1, wins: row.place === 1 ? 1 : 0, titles: rec.stage === "final" && row.place === 1 ? 1 : 0 });
+    }
+    const lines = paid.filter((p) => accounts.get(p.ownerId)).map((p) => `${accounts.nameOf(p.ownerId)} +${p.amount} (${p.bot})`);
+    if (lines.length) hud.ticker(`Designer prize money: ${lines.join(" · ")}`, "season");
+    desk.onResult(s, rec);
+  },
+  onSeasonEnd: () => desk.end("the season was abandoned"),
+  betting: {
+    render: (s) => betting.render(s),
+    act: (act, id) => betting.act(act, id),
+    beforeFixture: (s, fixtureId) => desk.beforeFixture(s, fixtureId),
+  },
+});
+desk.attach(season.state);
+
+/** Users (src/account/): one profile is both a bettor (wallet) and a bot designer (Garage, saved builds, record). */
+function syncAccount() {
+  const me = accounts.active();
+  hud.setAccount(me.name, fmtCredits(me.balance), me.color);
+}
+accounts.onChange(() => {
+  const me = accounts.active();
+  if (me.id !== rosterOwner) {
+    rosterOwner = me.id;
+    roster.splice(0, roster.length, ...loadRosterFor(me.id));
+    designer.reload();
+    // Exhibition matches field the Garage roster, so the arena follows the new user. A season match carries on.
+    if (!season.playing) startMatch();
+  }
+  season.refresh();
+  syncAccount();
+});
+const account = new AccountPanel({
+  roster,
+  season: () => season.state,
+  openGarage: () => designer.show(),
+  openSeason: () => season.show(),
+  toast,
+  click: () => sound.uiClick(),
+});
+syncAccount();
 const MODE_LABEL: Record<BrainMode, string> = { jev: "Jev", trained: "trained", baseline: "baseline" };
 const MODE_CLS: Record<BrainMode, string> = { jev: "jev", trained: "net", baseline: "base" };
 function setAllBrains(mode: BrainMode) {
@@ -545,6 +604,10 @@ window.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape" || ev.key === "g" || ev.key === "G") designer.hide();
     return;
   }
+  if (account.open) {
+    if (ev.key === "Escape" || ev.key === "p" || ev.key === "P") account.hide();
+    return;
+  }
   if (season.open) {
     if (ev.key === "Escape" || ev.key === "s" || ev.key === "S") season.hide();
     return;
@@ -568,6 +631,10 @@ window.addEventListener("keydown", (ev) => {
     case "s":
     case "S":
       season.show();
+      break;
+    case "p":
+    case "P":
+      account.show();
       break;
     case " ":
       ev.preventDefault();

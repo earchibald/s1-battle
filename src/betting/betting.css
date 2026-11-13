@@ -1,0 +1,52 @@
+/* ───────────────────────────── Betting panel (inside the season hub) ─────────────────────────────
+   Lives in a .sz-panel, so it inherits the season screen's type and gold accent. */
+.bt { display: flex; flex-direction: column; gap: 8px; }
+.bt-head { display: flex; align-items: center; gap: 12px; margin-bottom: 0 !important; flex-wrap: wrap; }
+.bt-tabs { display: flex; gap: 4px; flex: 1; }
+.bt-tabs button { font-size: 12px; padding: 5px 10px; color: var(--muted); }
+.bt-tabs button.on { color: #fff6dc; border-color: rgba(255,209,102,.7); background: rgba(255,209,102,.14); }
+.bt-wallet { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+.bt-wallet b { color: var(--gold); font-size: 13px; }
+
+.bt-pricing { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+.bt-progress { flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,.08); overflow: hidden; min-width: 60px; }
+.bt-progress i { display: block; height: 100%; background: var(--gold); transition: width .15s linear; }
+.bt-msg { margin: 0; font-size: 12px; padding: 7px 10px; border-radius: 8px; line-height: 1.4; }
+.bt-msg.ok { background: rgba(124,255,110,.1); border: 1px solid rgba(124,255,110,.35); color: #d6ffd0; }
+.bt-msg.no { background: rgba(255,77,94,.12); border: 1px solid rgba(255,77,94,.4); color: #ffc9ce; }
+
+.bt-market { display: grid; grid-template-columns: 92px 1fr; gap: 8px; align-items: center; }
+.bt-kind { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); line-height: 1.25; }
+.bt-sels { display: grid; gap: 4px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.bt-sels.n2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.bt-sel { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; padding: 6px 8px; font-size: 12px; min-width: 0; text-align: left; }
+.bt-sel span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; letter-spacing: .03em; }
+.bt-sel b { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--gold); }
+.bt-sel:hover:not(:disabled) { border-color: rgba(255,209,102,.6); }
+.bt-sel.on { border-color: var(--gold); background: rgba(255,209,102,.2); box-shadow: 0 0 14px -6px var(--gold); }
+.bt-sel:disabled { opacity: .35; cursor: not-allowed; }
+.bt-sel:disabled b { color: var(--muted); }
+.bt .k-match_hcap + .k-match_hcap .bt-kind { visibility: hidden; }
+
+.bt-slip { position: sticky; bottom: -14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px -16px -14px; padding: 10px 16px; background: rgba(18, 16, 8, .96); border-top: 1px solid rgba(255,209,102,.45); border-radius: 0 0 16px 16px; }
+.bt-slip-what { display: flex; flex-direction: column; min-width: 0; flex: 1 1 140px; }
+.bt-slip-what b { letter-spacing: .05em; }
+.bt-slip-what small { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-slip-price { font-family: var(--mono); font-size: 18px; font-weight: 700; color: var(--gold); font-variant-numeric: tabular-nums; }
+.bt-slip-stake { display: flex; gap: 4px; align-items: center; }
+.bt-slip-stake input { width: 72px; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--panel-border); background: rgba(0,0,0,.35); color: var(--text); font-family: var(--mono); font-size: 13px; }
+.bt-slip-stake button { font-size: 11px; padding: 6px 8px; }
+.bt-slip-stake button.on { border-color: var(--gold); }
+.bt-slip-ret { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.bt-slip-ret b { color: var(--text); }
+
+.bt-bets { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.bt-bets li { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,.04); font-size: 12px; }
+.bt-bets li > span:first-child { display: flex; flex-direction: column; min-width: 0; }
+.bt-bets small { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-bets li > span:nth-child(2) { font-family: var(--mono); color: var(--muted); white-space: nowrap; }
+.bt-bets em { font-style: normal; font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+.bt-bets em.won { color: #9dff92; }
+.bt-bets em.lost { color: #ff9aa3; }
+.bt-bets em.open { color: var(--gold); }
+.bt-bets em.void { color: var(--muted); }

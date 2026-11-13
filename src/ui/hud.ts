@@ -19,6 +19,7 @@ export interface HudCallbacks {
   toggleSound(): void;
   toggleDesigner(): void;
   toggleSeason(): void;
+  toggleAccount(): void;
   toggleFullscreen(): void;
 }
 
@@ -150,6 +151,7 @@ export class Hud {
         <button data-k="sound" title="M">🔊</button>
         <button data-k="fullscreen" title="Fullscreen (F)" aria-label="Fullscreen">⛶</button>
         <div class="seg"><button data-k="alljev" title="J">All Jev</button><button data-k="alltrained" title="T">All Trained</button><button data-k="allbase" title="B">All Baseline</button></div>
+        <button data-k="account" class="account" title="Users: wallet and designer record (P)"><i></i><b></b><span></span></button>
         <button data-k="garage" class="garage" title="G">🛠 Garage</button>
         <button data-k="season" class="season" title="S">🏆 Season</button>
         <button data-k="new" class="primary" title="N">⟳ New match</button>
@@ -188,6 +190,7 @@ export class Hud {
     this.controls.new.onclick = () => cb.newMatch();
     this.controls.garage.onclick = () => cb.toggleDesigner();
     this.controls.season.onclick = () => cb.toggleSeason();
+    this.controls.account.onclick = () => cb.toggleAccount();
     this.controls.fullscreen.onclick = () => cb.toggleFullscreen();
     if (!fullscreenSupported) this.controls.fullscreen.style.display = "none";
     onFullscreenChange((on) => {
@@ -286,6 +289,14 @@ export class Hud {
     }
     this.newsEl.replaceChildren(renderNews());
     this.newsEl.classList.remove("hidden");
+  }
+
+  /** The user at the controls and their wallet, on the Users button. */
+  setAccount(name: string, credits: string, color: number) {
+    const b = this.controls.account;
+    b.style.setProperty("--c", "#" + color.toString(16).padStart(6, "0"));
+    b.querySelector("b")!.textContent = name;
+    b.querySelector("span")!.textContent = credits;
   }
 
   setJev(info: JevInfo) {

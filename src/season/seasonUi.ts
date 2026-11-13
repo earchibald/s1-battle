@@ -35,9 +35,12 @@ import {
   type Candidate,
   type Fixture,
   type MatchRecord,
+  type Owner,
   type SeasonState,
 } from "./season";
 import { loadSeason, saveSeason } from "./storage";
+import { accounts } from "../account/accounts";
+import { loadRosterFor } from "../account/garage";
 import "./season.css";
 
 /**
@@ -57,6 +60,21 @@ export interface SeasonHost {
   ticker(text: string, cls?: string): void;
   toast(text: string): void;
   click?(): void;
+  /** A season has just been created. */
+  onSeasonStart?(s: SeasonState): void;
+  /** A fixture has just been recorded (played in the arena or simulated). `s` already includes `rec`. */
+  onResult?(s: SeasonState, rec: MatchRecord): void;
+  /** The season was cleared before it finished. */
+  onSeasonEnd?(): void;
+  /**
+   * Season betting (src/betting): a panel for the hub, its click handling, and the moment a fixture is about to
+   * be fought, when betting on it closes and the fixture gets the seed it will be played on.
+   */
+  betting?: {
+    render(s: SeasonState): string;
+    act(act: string, id: string): boolean;
+    beforeFixture(s: SeasonState, fixtureId: string): SeasonState;
+  };
 }
 
 export interface LiveFixture {
@@ -123,11 +141,13 @@ export class SeasonMode {
     clearTimeout(this.recapTimer);
     this.live = null;
     if (!this.playing || !this.state) return null;
-    const fx = nextFixture(this.state);
-    if (!fx) {
+    const upcoming = nextFixture(this.state);
+    if (!upcoming) {
       this.playing = false;
       return null;
     }
+    this.closeBetting(upcoming.id);
+    const fx = nextFixture(this.state)!;
     this.live = fx.id;
     this.log.reset();
     return { defs: fixtureDefs(this.state, fx), seed: fx.seed, label: fx.label, hook: fixtureHooks(this.state, fx)[0]?.text ?? "" };
@@ -143,11 +163,19 @@ export class SeasonMode {
     this.state = applyResult(this.state, id, outcomeFromWorld(world, this.log.kills));
     saveSeason(this.state);
     const rec = recordFor(this.state, id);
+    if (rec) this.host.onResult?.(this.state, rec);
     for (const h of rec?.headlines.slice(0, 3) ?? []) this.host.ticker(h, "season");
     this.shown = null;
     this.recapTimer = window.setTimeout(() => {
       if (this.playing && !this.live) this.show();
     }, RECAP_DELAY_MS);
+  }
+
+  /** Betting on a fixture closes the moment it is about to be fought; the book hands back its revealed seed. */
+  private closeBetting(fixtureId: string) {
+    if (!this.state || !this.host.betting) return;
+    this.state = this.host.betting.beforeFixture(this.state, fixtureId);
+    saveSeason(this.state);
   }
 
   /* ------------------------------------------------------------ overlay ---------------------------- */
@@ -179,7 +207,36 @@ export class SeasonMode {
 
   private openSetup() {
     this.view = "setup";
-    this.picks = candidatePool(this.host.roster, new Library().builds.map((b) => b.build));
+    // Every user's bots can enter: the active user's Garage and saved builds first, then the other designers'.
+    const me = accounts.active();
+    const owner = (id: string): Owner | undefined => {
+      const p = accounts.get(id);
+      return p ? { id: p.id, name: p.name } : undefined;
+    };
+    const saved = new Library().builds.map((b) => ({ build: b.build, owner: owner(b.ownerId) }));
+    const rivals = accounts.profiles.filter((p) => p.id !== me.id).flatMap((p) => loadRosterFor(p.id).map((build) => ({ build, owner: owner(p.id) })));
+    this.picks = candidatePool(this.host.roster, saved, owner(me.id), rivals);
+  }
+
+  /** Redraw after something outside the season changed (the user at the controls, a wallet). */
+  refresh() {
+    if (this.open && this.view === "setup") this.openSetup();
+    this.render();
+  }
+
+  /** Redraw the hub when something it shows moved (a bet settled, new prices). The setup screen is left alone. */
+  repaint() {
+    if (this.view !== "setup") this.render();
+  }
+
+  /** Whose bot this is: YOU for the user at the controls, the designer's name for anyone else's. */
+  private tag(e: { mine: boolean; owner?: Owner }): string {
+    if (!e.owner) return e.mine ? `<em class="sz-you">YOU</em>` : "";
+    if (e.owner.id === accounts.active().id) return `<em class="sz-you">YOU</em>`;
+    return `<em class="sz-by" title="Designed by ${esc(accounts.nameOf(e.owner.id) ?? e.owner.name)}">${esc(accounts.nameOf(e.owner.id) ?? e.owner.name)}</em>`;
+  }
+  private isMine(e: { mine: boolean; owner?: Owner } | undefined): boolean {
+    return !!e && (e.owner ? e.owner.id === accounts.active().id : e.mine);
   }
 
   private act(act: string, id: string) {
@@ -202,6 +259,7 @@ export class SeasonMode {
         this.leave();
         this.state = createSeason(chosen, (Date.now() % 1_000_000) + 1, Date.now());
         saveSeason(this.state);
+        this.host.onSeasonStart?.(this.state);
         this.shown = null;
         this.view = "hub";
         this.host.ticker(`A new season begins: ${this.state.entrants.map((e) => e.id).join(" · ")}`, "season");
@@ -226,10 +284,14 @@ export class SeasonMode {
       case "sim": {
         if (!this.state) return;
         const midMatch = this.playing && this.live !== null;
+        const before = this.state.records.length;
+        const due = nextFixture(this.state);
+        if (due) this.closeBetting(due.id);
         this.state = simulateNext(this.state);
         saveSeason(this.state);
         this.shown = null;
-        const rec = lastRecord(this.state);
+        const rec = this.state.records.length > before ? lastRecord(this.state) : null;
+        if (rec) this.host.onResult?.(this.state, rec);
         if (rec) this.host.ticker(`${rec.label} (simulated): ${rec.headlines[0] ?? ""}`, "season");
         // The arena was showing the fixture that has just been simulated: move it on to the next one.
         if (midMatch) {
@@ -252,10 +314,13 @@ export class SeasonMode {
         }
         this.state = null;
         saveSeason(null);
+        this.host.onSeasonEnd?.();
         this.leave();
         this.host.toast("Season cleared. Back to exhibition.");
         this.hide();
         return;
+      default:
+        if (!this.host.betting?.act(act, id)) return;
     }
     this.render();
   }
@@ -277,18 +342,24 @@ export class SeasonMode {
   private bot(s: SeasonState, id: string, extra = ""): string {
     const e = entrant(s, id);
     if (!e) return esc(id);
-    return `<span class="sz-bot" style="--c:${hex(e.build.color)}"><i>${WEAPON_ICON[e.build.kind]}</i><b>${esc(id)}</b>${e.mine ? `<em class="sz-you">YOU</em>` : ""}${extra}</span>`;
+    return `<span class="sz-bot" style="--c:${hex(e.build.color)}"><i>${WEAPON_ICON[e.build.kind]}</i><b>${esc(id)}</b>${this.tag(e)}${extra}</span>`;
   }
 
   private renderSetup(): string {
     const n = this.picks.filter((c) => c.selected).length;
-    const label: Record<Candidate["origin"], string> = { garage: "your Garage", library: "your Library", stock: "stock", wildcard: "house wildcard" };
+    const me = accounts.active().id;
+    const source = (c: Candidate) => {
+      if (c.origin === "stock") return "stock";
+      if (c.origin === "wildcard") return "house wildcard";
+      const whose = !c.owner ? "unsigned" : c.owner.id === me ? "your" : `${esc(c.owner.name)}'s`;
+      return c.origin === "garage" ? `${whose} Garage` : `${whose} saved build`;
+    };
     const cards = this.picks
       .map(
         (c, i) => `
         <button class="sz-pick ${c.selected ? "on" : ""}" data-act="pick" data-id="${i}" style="--c:${hex(c.build.color)}">
           <span class="sz-pick-icon">${WEAPON_ICON[c.build.kind]}</span>
-          <span class="sz-pick-text"><b>${esc(c.build.name)}</b><small>${c.build.kind} · ${label[c.origin]}</small><em>${esc(c.build.tagline)}</em></span>
+          <span class="sz-pick-text"><b>${esc(c.build.name)}</b><small>${c.build.kind} · ${source(c)}</small><em>${esc(c.build.tagline)}</em></span>
           <span class="sz-pick-mark">${c.selected ? "IN" : "—"}</span>
         </button>`,
       )
@@ -305,7 +376,7 @@ export class SeasonMode {
         </div>
         <div class="sz-body setup">
           <section class="sz-panel">
-            <header><h2>The league</h2><p>Pick exactly ${LEAGUE_SIZE} entrants. Your Garage and Library builds are in by default; stock bots and house wildcards fill the rest. Builds are frozen at the start, so Garage edits mid-season do not change who is fighting.</p></header>
+            <header><h2>The league</h2><p>Pick exactly ${LEAGUE_SIZE} entrants. Your own builds are in by default, then the other users' builds; stock bots and house wildcards fill the rest. A designed bot fights under its designer's name and earns them prize money. Builds are frozen at the start, so Garage edits mid-season do not change who is fighting.</p></header>
             <div class="sz-picks">${cards}</div>
           </section>
           <section class="sz-panel sz-format">
@@ -352,6 +423,7 @@ export class SeasonMode {
           <section class="sz-panel sz-table-panel">${this.renderTable(s)}</section>
           <div class="sz-mid">
             ${done ? this.renderChampion(s) : fx ? this.renderFixture(s, fx) : ""}
+            ${this.host.betting?.render(s) ?? ""}
             ${rec ? this.renderRecap(s, rec) : `<section class="sz-panel sz-empty">No matches played yet. The first result will show up here.</section>`}
           </div>
           <div class="sz-side">
@@ -381,7 +453,7 @@ export class SeasonMode {
         const tag = streak >= 2 ? `<em class="sz-hot" title="${streak} wins in a row">🔥${streak}</em>` : cold >= 3 ? `<em class="sz-cold" title="bottom two ${cold} matches running">▼${cold}</em>` : "";
         const st = this.status(s, r.id, r.rank);
         const form = r.form.map((p) => `<i class="p${p}">${p}</i>`).join("");
-        return `<tr class="zone-${zoneOf(r.rank)}${entrant(s, r.id)?.mine ? " mine" : ""}">
+        return `<tr class="zone-${zoneOf(r.rank)}${this.isMine(entrant(s, r.id)) ? " mine" : ""}">
           <td class="rk">${r.rank}<span class="mv ${mv > 0 ? "up" : mv < 0 ? "down" : ""}">${mv > 0 ? "▲" : mv < 0 ? "▼" : ""}</span></td>
           <td class="nm">${this.bot(s, r.id, tag)}${st ? `<span class="sz-status ${st === "OUT" ? "out" : ""}">${st}</span>` : ""}</td>
           <td>${r.played}</td><td>${r.wins}</td><td>${r.elims}</td><td>${r.damage}</td>
@@ -410,7 +482,7 @@ export class SeasonMode {
         const r = table.find((x) => x.id === id)!;
         return `<div class="sz-vs-bot" style="--c:${hex(e.build.color)}">
           <span class="sz-vs-icon">${WEAPON_ICON[e.build.kind]}</span>
-          <b>${esc(id)}</b>${e.mine ? `<em class="sz-you">YOU</em>` : ""}
+          <b>${esc(id)}</b>${this.tag(e)}
           <small>${r.played ? `${ordinal(r.rank)} · ${r.points} pts` : e.build.kind}</small>
           <span class="form">${r.form.map((p) => `<i class="p${p}">${p}</i>`).join("")}</span>
         </div>`;
@@ -489,7 +561,7 @@ export class SeasonMode {
       <section class="sz-panel sz-champion" style="--c:${hex(champ.build.color)}">
         <div class="sz-next-kicker">SEASON CHAMPION</div>
         <div class="sz-champ-name"><span class="sz-champ-icon">${WEAPON_ICON[champ.build.kind]}</span>${esc(champ.id)}</div>
-        <p class="sz-hook">${esc(champ.build.tagline)}${champ.mine ? " Your build took the title." : ""}</p>
+        <p class="sz-hook">${esc(champ.build.tagline)}${this.isMine(champ) ? " Your build took the title." : champ.owner ? ` Designed by ${esc(accounts.nameOf(champ.owner.id) ?? champ.owner.name)}.` : ""}</p>
         <ol class="sz-podium">${order.map((id, i) => `<li class="${i < 4 ? "finalist" : ""}"><span>${ordinal(i + 1)}</span>${this.bot(s, id)}</li>`).join("")}</ol>
       </section>
       <section class="sz-panel"><header><h2>Honours</h2></header><ul class="sz-awards">${awards}</ul></section>

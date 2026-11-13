@@ -162,6 +162,57 @@ All of the scheduling, scoring and storyline logic is pure and seeded (`src/seas
 and prints every fixture, hook, result and headline; `--check` also verifies the schedule's guarantees over 30
 seeds and that a season replays identically from its seed.
 
+## Users: bettors and bot designers
+
+Everyone who plays on the machine is a **user** (`P` or the name on the control bar), and a user does both jobs:
+
+- **One wallet.** Each user has a balance of play-money credits (◈, starting at 1,000) with a ledger of every
+  entry. Bets are staked from it and paid back into it, and so is designer prize money. It is the only wallet:
+  `accounts.debit()` / `accounts.credit()` in `src/account/accounts.ts` are how anything moves credits.
+- **Their own Garage.** The four roster slots belong to the user at the controls; switching user swaps the
+  Garage (and the exhibition match) to theirs. **Save build** signs the build with its designer. The Library tab
+  shows your builds, and other designers' builds to copy from.
+- **Bots enter seasons under their designer.** The season picker offers every user's Garage and saved builds;
+  each entrant carries its designer (`Entrant.owner`), shown beside the bot and used in the storylines
+  ("Ana's RIPSAW…", "Designer against designer").
+- **Prize money.** A designed bot pays its designer after every season match, played or simulated: 40 / 20 / 10
+  for 1st / 2nd / 3rd in a league match, +5 per elimination, 60 for getting through Last Chance, and
+  300 / 120 / 60 / 30 in the Grand Final (`src/account/prizes.ts`). House bots earn nothing.
+- **Designer record.** Bots entered, matches, wins, titles and prize money, kept per user.
+
+Users are local profiles in `localStorage` (up to eight, hot-seat); nothing leaves the machine. The Garage roster
+and saved builds from before accounts existed are adopted by the first user. `npx tsx scripts/account-check.ts`
+checks the wallet arithmetic, ownership through a season and the prize table headlessly.
+
+## Season betting
+
+Every season has a book on it (the **Betting** panel in the season hub; design and evidence in
+[`docs/betting.md`](docs/betting.md)). Bets are play-money credits staked from the user's wallet.
+
+- **Per match:** the winner, a top-two finish (in Last Chance: to qualify), a points **handicap** between any two
+  of the four bots, and fight length over or under a line.
+- **Per round:** top scorer of the league week across both matches.
+- **Per season:** champion, to reach the Grand Final, league winner, and a **handicap league** in which every bot
+  gets a head start in league points that levels the field. Season markets reprice after every match.
+- **Prices come from the game.** The bookmaker rolls the rest of the season forward on the real match engine and
+  grades every market on every simulated season with the same function that will settle it. The offered price is
+  the estimate plus a safety loading and a margin, shortened further as money piles onto a selection.
+- **The book cannot go wrong quietly.** Whole credits only; every bet is fully collateralised in escrow the moment
+  it is struck, so a payout can never fail; an append-only hash-chained ledger; hard liability caps per selection;
+  typed rejections that change nothing; idempotent bet requests; settlement that pays each bet exactly once; and
+  an audit that rebuilds everything from the ledger and refuses a saved book that does not add up.
+- **Nobody can know a result while betting is open.** A match's seed is fixed by a secret the house committed to
+  before the bets and by the ledger as it stood when betting closed (`src/betting/fair.ts`).
+- **Dead heats, pushes and abandoned seasons** are handled the way a bookmaker would: a tie pays the winning
+  fraction of the stake at full odds, a push returns the stake, and abandoning a season refunds every open bet.
+- A user with fewer than ◈ 100 at the start of a season is topped up to it, so nobody is locked out for good.
+
+`npm run bet:check` runs the engine's correctness checks (about a minute). `npm run bet:sim` plays whole seasons
+against a simulated public of 40 bettors, including a sharp syndicate with a better model than the house, many
+accounts hammering one selection, and a fuzzer, and reports the house's result, each kind of bettor's return, the
+calibration of the prices, and whether any integrity check failed. The same engine runs as a local house server
+with minimal registration (a handle and a bearer token) under `/api/bet` (`server/betting.ts`).
+
 ## How a decision works
 
 1. `src/sim/perception.ts` builds two views of the moment for a bot: a semantic **Perception** (words and
@@ -194,7 +245,8 @@ option and plays each one out (`scripts/train/`).
 ```
 shared/      types; build.ts (builds, parts, costs, derived stats, condition language, BotLogic);
              logic.ts (rule-tree interpreter, Jev gates/questions); bots/ (the seven stock builds). Browser + server.
-server/      Express: /api/decide proxies Jev (key stays server-side), /api/health, /api/stats
+server/      Express: /api/decide proxies Jev (key stays server-side), /api/health, /api/stats;
+             betting.ts (/api/bet: the house as a local server, handle + token registration, state in data/betting)
 src/sim/     deterministic simulation: physics, weapons, hazards and traps, perception, controller, match rules, quicksim
 src/brain/   decision scheduler (cadence, event nudges, stale-answer guard, fallback); trained/ (network + style policy)
 src/render/  Three.js arena (pit, saws, vents, launch pad, shock plates), procedural bot models (armor plates, wheel size and rig scale follow the build)
@@ -202,9 +254,16 @@ src/ui/      HUD cards, ticker/commentary, event log, labels, comic callouts (+ 
              designer.ts (the Garage), library.ts
 src/season/  season.ts (pure: schedule, points, table, rivalries, hooks, headlines, awards), runner.ts (World -> result,
              headless fixtures), storage.ts, seasonUi.ts + season.css (setup / hub / champion screens, arena hooks)
+src/account/ accounts.ts (users: profiles, the one wallet and its ledger, designer records), garage.ts (per-user rosters),
+             prizes.ts (pure: designer prize money per match), accountUi.ts + account.css (the Users screen)
+src/betting/ ledger.ts (double-entry, hash-chained), book.ts (markets, bets, limits, settlement, audit), markets.ts
+             (what can be bet on and how it is graded), pricing.ts (Monte Carlo prices from the match engine), fair.ts
+             (commit-reveal seeds), seasonBook.ts (a season and its markets moving together), punters.ts (simulated
+             bettors), desk.ts + deskUi.ts + betting.css (the browser's book on the local season, and its panel)
 src/audio/   procedural Web Audio sound engine (no asset files)
 scripts/     probe-jev.ts (latency check), headless.ts (tournaments; stock kinds or a garage export), balance.ts (win share sweep)
-             season-sim.ts (a whole season, headless)
+             season-sim.ts (a whole season, headless), account-check.ts (wallet, ownership, prizes)
+             betting-check.ts (engine correctness), betting-sim.ts (whole seasons against simulated bettors)
              train/ (rollout data generation, PyTorch training, parity/fork checks, brain-vs-brain tournaments)
              league/ (improvement loop: paired matches, SPRT promotion gate, Bradley–Terry ladder, curriculum)
 public/models/trained-brain.json   the shipped trained-brain weights (league model g3b, float16, ~390 KB)
@@ -212,7 +271,7 @@ public/models/trained-brain.json   the shipped trained-brain weights (league mod
 
 ## Controls
 
-Space pause · N new match · G garage · S season · L event log · / search the log · Esc close it ·
+Space pause · N new match · G garage · S season · P users · L event log · / search the log · Esc close it ·
 C auto/free camera · F (or ⛶) fullscreen · D debug nav lines · M mute · 1/2/3 speed · J all Jev · T all trained ·
 B all baseline. In free camera: drag to orbit, Option/⌘/Shift-drag (Alt/Ctrl/Shift elsewhere) or right-drag to pan
 across the floor, scroll to zoom.
