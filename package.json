@@ -16,7 +16,10 @@
     "improve": "scripts/league/loop.sh",
     "bet:check": "tsx scripts/betting-check.ts",
     "bet:sim": "tsx scripts/betting-sim.ts",
-    "bet:house": "tsx scripts/house-check.ts"
+    "bet:house": "tsx scripts/house-check.ts",
+    "api:docs": "tsx scripts/api-docs.ts",
+    "api:check": "tsx scripts/api-docs.ts --check",
+    "api:lint": "npx -y @redocly/cli@1 lint docs/api/openapi.yaml && npx -y @asyncapi/cli@2 validate docs/api/asyncapi.yaml"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.7.0",
@@ -29,9 +32,11 @@
     "@types/node": "^22.10.0",
     "@types/three": "^0.170.0",
     "concurrently": "^9.1.0",
+    "marked": "^18.2.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "yaml": "^2.9.1"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,

@@ -216,6 +216,22 @@ also enter one Garage build (`PUT /api/bet/bot`): it joins the next server seaso
 pays prize money into the wallet they bet from. The server prices in slices so it keeps taking bets, and plays
 its seasons on a clock when `BET_MATCH_EVERY` is set. `npm run bet:house` checks it end to end over HTTP.
 
+## API
+
+[`docs/api/`](docs/api/README.md) specifies one API for reading and driving all of this from outside the
+browser: seasons, betting, bot design and direct control of a robot in a match, by any mix of scripts, models
+and people. It is an OpenAPI 3.1 file for HTTP, an AsyncAPI 3.0 file for the sockets, and a guide. Each
+operation is marked `live` (the house server answers it today under `/api/bet`), `partial` or `proposed`;
+driven matches and the sockets are proposed.
+
+```
+npm run api:docs     # check both specs and rebuild docs/api/index.html
+npm run api:check    # check only: every $ref resolves, every example validates against its schema
+npm run api:lint     # the standard linters (Redocly, AsyncAPI CLI), fetched with npx
+```
+
+With the server running, browse the reference at http://localhost:8787/api/docs/.
+
 ## How a decision works
 
 1. `src/sim/perception.ts` builds two views of the moment for a bot: a semantic **Perception** (words and
