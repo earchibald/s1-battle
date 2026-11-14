@@ -34,6 +34,9 @@ app.post("/api/decide", async (req, res) => {
 /** Season betting: the house, wallets and markets (server/betting.ts). */
 app.use("/api/bet", bettingRouter());
 
+/** The API specification and its browsable reference (docs/api, built by `npm run api:docs`). */
+app.use("/api/docs", express.static(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../docs/api"), { index: "index.html" }));
+
 if (process.env.NODE_ENV === "production") {
   const dist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist");
   app.use(express.static(dist));

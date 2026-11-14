@@ -1,0 +1,2988 @@
+openapi: 3.1.0
+info:
+  title: S1 Arena API
+  version: 1.0.0-draft.1
+  summary: Read and drive betting, seasons, bot design and direct robot control.
+  description: |
+    The HTTP half of the S1 Arena API. The realtime half (seat control, spectating and the live feed) is
+    specified in `asyncapi.yaml`; the concepts both share are explained in the guide (`README.md`).
+
+    Every operation carries `x-status`:
+
+    * `live`: the house server answers this today, at the path in `x-today`.
+    * `partial`: the data is served today, but in a different shape or at a different path.
+    * `proposed`: specified here, not built.
+
+    Conventions: JSON only. Money is whole play-money credits. Prices are decimal odds in hundredths
+    ("centi-odds": 235 is 2.35). Times are milliseconds since the Unix epoch unless a field says seconds or
+    ticks. A tick is 1/60 s of simulated time.
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+  - url: http://localhost:8787/api/v1
+    description: Local house server (`npm run dev`)
+  - url: https://{host}/api/v1
+    description: Deployed house server
+    variables:
+      host:
+        default: arena.example
+tags:
+  - name: Meta
+    description: Health, the rules catalog and the server clock.
+  - name: Account
+    description: Registration, the caller's profile and wallet, API keys and realtime tickets.
+  - name: Seasons
+    description: The house season. League table, fixtures, results and the fairness records behind every seed.
+  - name: Design
+    description: Bot builds. Check a build, read the stock builds, enter a bot into the next season.
+  - name: Betting
+    description: Markets, prices, bets and the public audit of the book.
+  - name: Matches
+    description: >-
+      Matches you create and drive. Seats are filled by built-in brains, remote controllers, recorded inputs or
+      nothing at all. Covers both clocks (realtime and lockstep), HTTP control for slow controllers, and replays.
+  - name: Admin
+    description: Driving the house season by hand. Needs the `admin` scope.
+security: []
+
+x-scopes:
+  account: Read the caller's profile, wallet and bets.
+  bets: Place bets.
+  bots: Enter, replace or withdraw the caller's bot.
+  drive: Create matches and control seats in them.
+  admin: Advance the house season and set its clock.
+
+paths:
+  /health:
+    get:
+      tags: [Meta]
+      operationId: getHealth
+      summary: Server health
+      x-status: live
+      x-today: GET /api/health
+      responses:
+        "200":
+          description: The server is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, jev, model]
+                properties:
+                  ok: { type: boolean, const: true }
+                  jev: { type: boolean, description: True when the server holds a Jev key, so the `jev` brain can be used. }
+                  model: { type: string, description: The Jev model id in use., examples: ["jev-latest"] }
+                  engineVersion: { $ref: "#/components/schemas/EngineVersion" }
+
+  /rules:
+    get:
+      tags: [Meta]
+      operationId: getRules
+      summary: The rules catalog
+      description: |
+        Every constant a client needs in order not to hard-code the game: the design catalog (weapon systems,
+        parts, techniques, condition subjects, the budget), arena geometry and hazard timing, the season
+        format, points and prize money, betting limits, and the limits on driven matches.
+
+        The response is immutable for a given `rulesVersion`. Send `If-None-Match` to revalidate cheaply.
+        Hazards are pure functions of fight time, so a deterministic controller can predict every pit opening
+        and trap from `arena` alone.
+      x-status: proposed
+      x-today: Constants in shared/build.ts, src/sim/arena.ts, src/season/season.ts, src/account/prizes.ts, src/betting/book.ts
+      parameters:
+        - name: If-None-Match
+          in: header
+          schema: { type: string }
+      responses:
+        "200":
+          description: The catalog.
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Rules" }
+        "304": { description: Not modified. }
+
+  /time:
+    get:
+      tags: [Meta]
+      operationId: getTime
+      summary: Server clock
+      description: >-
+        For estimating clock offset before a realtime match. Over the seat socket use `ping` instead: it also
+        returns the match tick.
+      x-status: proposed
+      responses:
+        "200":
+          description: The server's wall clock.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [serverTime, tickRate]
+                properties:
+                  serverTime: { $ref: "#/components/schemas/Millis" }
+                  tickRate: { type: integer, const: 60 }
+
+  /users:
+    post:
+      tags: [Account]
+      operationId: registerUser
+      summary: Register a handle
+      description: |
+        Creates a user with a wallet of 1,000 credits and returns a bearer token. The token is shown once and
+        only its hash is stored.
+
+        Kept for development and for programmatic clients. Human sign-up is expected to move to OAuth (see
+        Authentication in the guide); when it does, this route stays for scripts and the user id format does
+        not change.
+      x-status: live
+      x-today: POST /api/bet/register
+      x-rate-limit: 5 burst, then 1 per 20 s, per IP address
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [handle]
+              properties:
+                handle: { $ref: "#/components/schemas/Handle" }
+            example: { handle: "pit-boss" }
+      responses:
+        "200":
+          description: Registered.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, userId, handle, token, balance]
+                properties:
+                  ok: { type: boolean, const: true }
+                  userId: { $ref: "#/components/schemas/UserId" }
+                  handle: { $ref: "#/components/schemas/Handle" }
+                  token: { type: string, pattern: "^[0-9a-f]{64}$", description: The bearer token. Not retrievable later. }
+                  balance: { $ref: "#/components/schemas/Credits" }
+              example: { ok: true, userId: "u-3fa91c07b2d4", handle: "pit-boss", token: "9b1c4e079b1c4e079b1c4e079b1c4e079b1c4e079b1c4e079b1c4e079b1c4e07", balance: 1000 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /me:
+    get:
+      tags: [Account]
+      operationId: getMe
+      summary: The caller's profile
+      x-status: live
+      x-today: GET /api/bet/me
+      security: [{ bearer: [account] }]
+      responses:
+        "200":
+          description: Profile, balance, entered bot and the most recent 200 bets.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, userId, handle, balance, bot, bets]
+                properties:
+                  ok: { type: boolean, const: true }
+                  userId: { $ref: "#/components/schemas/UserId" }
+                  handle: { $ref: "#/components/schemas/Handle" }
+                  balance: { $ref: "#/components/schemas/Credits" }
+                  bot:
+                    oneOf: [{ $ref: "#/components/schemas/BotEntry" }, { type: "null" }]
+                  bets:
+                    type: array
+                    items: { $ref: "#/components/schemas/Bet" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /me/wallet:
+    get:
+      tags: [Account]
+      operationId: getWallet
+      summary: Wallet history
+      description: >-
+        The caller's side of the ledger, newest first: grants, stakes, payouts, refunds, prizes and stipends.
+        Each row is one leg of a hash-chained ledger entry, so a client can reconcile it against `/audit`.
+      x-status: proposed
+      security: [{ bearer: [account] }]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: A page of wallet rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, balance, items, nextCursor]
+                properties:
+                  ok: { type: boolean, const: true }
+                  balance: { $ref: "#/components/schemas/Credits" }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/WalletRow" }
+                  nextCursor: { $ref: "#/components/schemas/NextCursor" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /me/keys:
+    get:
+      tags: [Account]
+      operationId: listKeys
+      summary: List API keys
+      x-status: proposed
+      security: [{ bearer: [account] }]
+      responses:
+        "200":
+          description: The caller's keys. Secrets are never returned here.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, items]
+                properties:
+                  ok: { type: boolean, const: true }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ApiKey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Account]
+      operationId: createKey
+      summary: Create an API key
+      description: |
+        Mints a long-lived key for a script, a bot harness or a model. A key carries only the scopes asked
+        for, so a betting bot's key cannot drive matches and a match harness cannot spend the wallet. Keys
+        cannot mint keys, and no key may hold `admin`.
+      x-status: proposed
+      security: [{ bearer: [account] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, scopes]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 40 }
+                scopes:
+                  type: array
+                  minItems: 1
+                  uniqueItems: true
+                  items: { $ref: "#/components/schemas/Scope" }
+                expiresAt:
+                  oneOf: [{ $ref: "#/components/schemas/Millis" }, { type: "null" }]
+            example: { name: "latency study", scopes: [drive] }
+      responses:
+        "200":
+          description: Created. `secret` is shown once.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, key, secret]
+                properties:
+                  ok: { type: boolean, const: true }
+                  key: { $ref: "#/components/schemas/ApiKey" }
+                  secret: { type: string, pattern: "^s1_[0-9a-f]{64}$" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /me/keys/{keyId}:
+    delete:
+      tags: [Account]
+      operationId: revokeKey
+      summary: Revoke an API key
+      description: Takes effect at once. Sockets opened with the key are closed.
+      x-status: proposed
+      security: [{ bearer: [account] }]
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /ws-tickets:
+    post:
+      tags: [Account]
+      operationId: createWsTicket
+      summary: Get a one-time socket ticket
+      description: >-
+        Browsers cannot set an `Authorization` header on a WebSocket. A ticket is a single-use credential,
+        valid for 30 seconds, passed as `?ticket=` when opening any socket in `asyncapi.yaml`. Clients that can
+        set headers may send the bearer token on the upgrade request instead.
+      x-status: proposed
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: A ticket.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, ticket, expiresAt]
+                properties:
+                  ok: { type: boolean, const: true }
+                  ticket: { type: string }
+                  expiresAt: { $ref: "#/components/schemas/Millis" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /seasons:
+    get:
+      tags: [Seasons]
+      operationId: listSeasons
+      summary: List seasons
+      description: Newest first. Today the server keeps only the season in play; history starts when this ships.
+      x-status: proposed
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: A page of season summaries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, items, nextCursor]
+                properties:
+                  ok: { type: boolean, const: true }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/SeasonSummary" }
+                  nextCursor: { $ref: "#/components/schemas/NextCursor" }
+
+  /seasons/simulate:
+    post:
+      tags: [Seasons]
+      operationId: simulateSeason
+      summary: Simulate a whole season
+      description: |
+        Stateless. Runs a full ten-match season for eight builds on built-in brains and returns every record.
+        Nothing is stored, no markets open and no money moves. About 100 ms of one core. This is the same
+        code path the house uses to price a season, so it is the honest way for a bettor to build their own
+        model.
+      x-status: proposed
+      x-today: scripts/season-sim.ts (createSeason + simulateNext)
+      x-rate-limit: 10 burst, then 1 per 5 s, per user
+      security: [{ bearer: [drive] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entrants]
+              properties:
+                entrants:
+                  type: array
+                  minItems: 8
+                  maxItems: 8
+                  items: { $ref: "#/components/schemas/BotSource" }
+                seed: { type: integer, minimum: 0, maximum: 999999, description: Omit for a random seed. }
+                brain: { $ref: "#/components/schemas/BuiltinBrain" }
+      responses:
+        "200":
+          description: The finished season.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, season]
+                properties:
+                  ok: { type: boolean, const: true }
+                  season: { $ref: "#/components/schemas/Season" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /seasons/{seasonId}:
+    get:
+      tags: [Seasons]
+      operationId: getSeason
+      summary: Read a season
+      description: |
+        `seasonId` is an id such as `s12`, or the word `current` for the season in play.
+
+        The response is everything a spectator or a bettor needs in one read: phase, table, entrants, the
+        round now open, the match clock and whether a pricing run is in hand. `markets` lists the open and
+        suspended markets, with prices personalised to the caller when a token is sent (`maxStake` reflects
+        the caller's balance and limits).
+      x-status: partial
+      x-today: GET /api/bet/season (current season only)
+      security: [{}, { bearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/SeasonId"
+      responses:
+        "200":
+          description: The season.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SeasonView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /seasons/{seasonId}/standings:
+    get:
+      tags: [Seasons]
+      operationId: getStandings
+      summary: League table
+      x-status: partial
+      x-today: "`table` in GET /api/bet/season (rank, played, points, wins only)"
+      parameters:
+        - $ref: "#/components/parameters/SeasonId"
+      responses:
+        "200":
+          description: The table, top first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, seasonId, standings]
+                properties:
+                  ok: { type: boolean, const: true }
+                  seasonId: { $ref: "#/components/schemas/SeasonIdValue" }
+                  standings:
+                    type: array
+                    items: { $ref: "#/components/schemas/Standing" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /seasons/{seasonId}/entrants:
+    get:
+      tags: [Seasons]
+      operationId: listEntrants
+      summary: Entrants and their builds
+      description: |
+        The eight bots in the league with the builds frozen at season start. Builds are public from that
+        moment: a match cannot be replayed, and a seed cannot be checked, without them. A designer's later
+        edits are not shown until they are frozen into the next season.
+      x-status: partial
+      x-today: "`entrants` in GET /api/bet/season (no builds)"
+      parameters:
+        - $ref: "#/components/parameters/SeasonId"
+      responses:
+        "200":
+          description: The entrants in entry order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, seasonId, entrants]
+                properties:
+                  ok: { type: boolean, const: true }
+                  seasonId: { $ref: "#/components/schemas/SeasonIdValue" }
+                  entrants:
+                    type: array
+                    items: { $ref: "#/components/schemas/Entrant" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /seasons/{seasonId}/fixtures:
+    get:
+      tags: [Seasons]
+      operationId: listFixtures
+      summary: Fixtures and results
+      description: >-
+        All fixtures scheduled so far, in playing order. The Last Chance and Grand Final fixtures appear once
+        their line-ups are known. A played fixture carries its record.
+      x-status: partial
+      x-today: "`round` in GET /api/bet/season (the open round only, no records)"
+      parameters:
+        - $ref: "#/components/parameters/SeasonId"
+        - name: stage
+          in: query
+          schema: { $ref: "#/components/schemas/Stage" }
+        - name: played
+          in: query
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Fixtures.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, seasonId, fixtures]
+                properties:
+                  ok: { type: boolean, const: true }
+                  seasonId: { $ref: "#/components/schemas/SeasonIdValue" }
+                  fixtures:
+                    type: array
+                    items: { $ref: "#/components/schemas/FixtureView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /seasons/{seasonId}/fixtures/{fixtureId}:
+    get:
+      tags: [Seasons]
+      operationId: getFixture
+      summary: One fixture
+      x-status: proposed
+      parameters:
+        - $ref: "#/components/parameters/SeasonId"
+        - name: fixtureId
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/FixtureId" }
+      responses:
+        "200":
+          description: The fixture, its record if played, and its fairness record.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, fixture]
+                properties:
+                  ok: { type: boolean, const: true }
+                  fixture: { $ref: "#/components/schemas/FixtureView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /seasons/{seasonId}/fairness:
+    get:
+      tags: [Seasons]
+      operationId: getFairness
+      summary: Seed commitments
+      description: |
+        One record per fixture whose markets have opened. Before betting closes a record shows only `commit`.
+        At lock the house reveals `secret`, takes `anchor` from the ledger head, and the match seed follows:
+
+        ```
+        commit = sha256("s1-commit|" + seasonId + "|" + fixtureId + "|" + secret)
+        seed   = first 32 bits of sha256("s1-seed|" + secret + "|" + anchor)
+        ```
+
+        With the seed and the entrants' builds, `GET /matches/{matchId}/replay` lets anyone re-run the match.
+      x-status: live
+      x-today: "`fairness` in GET /api/bet/season"
+      parameters:
+        - $ref: "#/components/parameters/SeasonId"
+      responses:
+        "200":
+          description: Fairness records.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, seasonId, fairness]
+                properties:
+                  ok: { type: boolean, const: true }
+                  seasonId: { $ref: "#/components/schemas/SeasonIdValue" }
+                  fairness:
+                    type: array
+                    items: { $ref: "#/components/schemas/FairRecord" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /builds/stock:
+    get:
+      tags: [Design]
+      operationId: listStockBuilds
+      summary: Stock builds
+      description: >-
+        The seven house builds, one per weapon system, complete with their rule trees and Jev prompts. Start a
+        design from one of these: `PUT /me/bot` fills anything a submitted build leaves out from the stock
+        build of the same `kind`.
+      x-status: proposed
+      x-today: stockBuild() in shared/bots/index.ts
+      responses:
+        "200":
+          description: The stock builds.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, builds]
+                properties:
+                  ok: { type: boolean, const: true }
+                  builds:
+                    type: array
+                    items: { $ref: "#/components/schemas/BotBuild" }
+
+  /builds/check:
+    post:
+      tags: [Design]
+      operationId: checkBuild
+      summary: Check a build
+      description: |
+        Stateless. Normalises a build exactly as entry does, then returns the normalised build, its cost
+        against the budget, the stats the simulation derives from it, and every problem found. Errors block
+        entry; warnings do not. Use it as the inner loop of a design optimiser.
+      x-status: proposed
+      x-today: normalizeBuild, costOf, derive and validateBuild in shared/build.ts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [build]
+              properties:
+                build: { $ref: "#/components/schemas/BotBuildInput" }
+      responses:
+        "200":
+          description: The verdict.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, legal, build, cost, derived, problems]
+                properties:
+                  ok: { type: boolean, const: true }
+                  legal: { type: boolean, description: True when there are no problems at level `error`. }
+                  build: { $ref: "#/components/schemas/BotBuild" }
+                  cost: { $ref: "#/components/schemas/Cost" }
+                  derived: { $ref: "#/components/schemas/Derived" }
+                  problems:
+                    type: array
+                    items: { $ref: "#/components/schemas/Problem" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /me/bot:
+    get:
+      tags: [Design]
+      operationId: getMyBot
+      summary: The caller's entered bot
+      x-status: live
+      x-today: GET /api/bet/bot
+      security: [{ bearer: [account] }]
+      responses:
+        "200":
+          description: The entry, or null.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, bot]
+                properties:
+                  ok: { type: boolean, const: true }
+                  bot:
+                    oneOf: [{ $ref: "#/components/schemas/BotEntry" }, { type: "null" }]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [Design]
+      operationId: enterBot
+      summary: Enter or replace the caller's bot
+      description: |
+        One bot per user. Entries are frozen into a season when it starts: the designers who have waited
+        longest go first and the house's stock bots and wildcards fill the rest of the league of eight. An
+        edit made mid-season plays from the next season (`playing.current` turns false).
+
+        A designed bot pays its designer prize money into the wallet they bet from (see `prizes` in `/rules`).
+
+        Rejected when the callsign is malformed, belongs to a house bot or to another designer, the build is
+        over budget, lacks Engage, or installs a technique its weapon cannot use.
+      x-status: live
+      x-today: PUT /api/bet/bot
+      x-rate-limit: 20 burst, then 1 per 5 s, per user
+      security: [{ bearer: [bots] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [build]
+              properties:
+                build: { $ref: "#/components/schemas/BotBuildInput" }
+            example:
+              build:
+                name: "TIN OPENER"
+                kind: saw
+                tagline: "Finds the seam."
+                levels: { armor: 1, motor: 4, frame: 2, steering: 3, power: 3, cycle: 2, wedge: 0, traction: 1, gyro: 0, sensors: 2 }
+                techniques: [engage, retreat, flank, spin_up]
+      responses:
+        "200":
+          description: Entered.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, bot]
+                properties:
+                  ok: { type: boolean, const: true }
+                  bot: { $ref: "#/components/schemas/BotEntry" }
+        "400":
+          description: The build was rejected. `problems` lists everything wrong; `error` is the first.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Error"
+                  - type: object
+                    properties:
+                      problems:
+                        type: array
+                        items: { type: string }
+              example: { ok: false, code: bad_request, error: "3 points over the 60-point budget", problems: ["3 points over the 60-point budget"] }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    delete:
+      tags: [Design]
+      operationId: withdrawBot
+      summary: Withdraw the caller's bot
+      description: Removes it from future seasons. A copy already frozen into the season in play finishes that season.
+      x-status: live
+      x-today: DELETE /api/bet/bot
+      security: [{ bearer: [bots] }]
+      responses:
+        "200":
+          description: Done.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, withdrawn]
+                properties:
+                  ok: { type: boolean, const: true }
+                  withdrawn: { type: boolean, description: False when there was no entry. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /markets:
+    get:
+      tags: [Betting]
+      operationId: listMarkets
+      summary: Markets and live prices
+      description: |
+        Markets of the season in play, filtered. Market ids contain `/` (for example `s12/w1a/win`), so markets
+        are addressed by the `id` query parameter and never by path.
+
+        A price of 0 means the selection is not offered right now. With a token, `maxStake` is the largest
+        stake the caller could place this instant. Prices move with exposure, so treat a quote as advisory
+        and send `minPrice` with the bet.
+      x-status: partial
+      x-today: "`markets` in GET /api/bet/season (open and suspended only, no filters)"
+      security: [{}, { bearer: [] }]
+      parameters:
+        - name: id
+          in: query
+          description: Exact market id. Repeat for several.
+          schema: { type: array, items: { $ref: "#/components/schemas/MarketId" } }
+          style: form
+          explode: true
+        - name: seasonId
+          in: query
+          schema: { $ref: "#/components/schemas/SeasonIdValue" }
+        - name: fixtureId
+          in: query
+          schema: { $ref: "#/components/schemas/FixtureId" }
+        - name: scope
+          in: query
+          schema: { $ref: "#/components/schemas/MarketScope" }
+        - name: kind
+          in: query
+          schema: { $ref: "#/components/schemas/MarketKind" }
+        - name: status
+          in: query
+          description: Defaults to `open` and `suspended`.
+          schema: { type: array, items: { $ref: "#/components/schemas/MarketStatus" } }
+          style: form
+          explode: true
+      responses:
+        "200":
+          description: Matching markets.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, markets]
+                properties:
+                  ok: { type: boolean, const: true }
+                  markets:
+                    type: array
+                    items: { $ref: "#/components/schemas/Market" }
+
+  /bets:
+    post:
+      tags: [Betting]
+      operationId: placeBet
+      summary: Place a bet
+      description: |
+        Singles only, fixed odds, no cash-out. The bet is struck at the live price or rejected; it is never
+        partly filled. On acceptance the stake leaves the wallet and sits in the market's escrow with the
+        house's matching collateral until the market settles or is voided.
+
+        `key` makes the request safe to retry: repeating a key returns the original bet with
+        `duplicate: true` and moves no money. Reusing a key for a different bet is rejected as `key_reused`.
+
+        `minPrice` is the worst price the caller accepts. If the price has shortened below it the bet is
+        rejected as `price_changed` and the response carries the current `price`.
+      x-status: live
+      x-today: POST /api/bet/bets
+      x-rate-limit: 20 burst, then 2 per second, per user
+      security: [{ bearer: [bets] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BetRequest" }
+            example: { key: "2026-11-13T19:02:11Z-1", marketId: "s12/w1a/win", selectionId: "RIPSAW", stake: 25, minPrice: 310 }
+      responses:
+        "200":
+          description: Struck, or a repeat of an earlier request.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, bet, duplicate, balance]
+                properties:
+                  ok: { type: boolean, const: true }
+                  bet: { $ref: "#/components/schemas/Bet" }
+                  duplicate: { type: boolean }
+                  balance: { $ref: "#/components/schemas/Credits" }
+        "400":
+          description: Malformed request (`bad_request`). Nothing changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BetRejection" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: Well-formed but refused. Nothing changed. `code` says why.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BetRejection" }
+              example: { ok: false, code: price_changed, message: "the price is now 2.95", price: 295 }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    get:
+      tags: [Betting]
+      operationId: listBets
+      summary: The caller's bets
+      x-status: partial
+      x-today: "`bets` in GET /api/bet/me (latest 200, no filters)"
+      security: [{ bearer: [account] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/BetStatus" }
+        - name: marketId
+          in: query
+          schema: { $ref: "#/components/schemas/MarketId" }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: A page of bets, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, items, nextCursor]
+                properties:
+                  ok: { type: boolean, const: true }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Bet" }
+                  nextCursor: { $ref: "#/components/schemas/NextCursor" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /bets/{betId}:
+    get:
+      tags: [Betting]
+      operationId: getBet
+      summary: One bet
+      x-status: proposed
+      security: [{ bearer: [account] }]
+      parameters:
+        - name: betId
+          in: path
+          required: true
+          schema: { type: string, examples: ["house:b412"] }
+      responses:
+        "200":
+          description: The bet.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, bet]
+                properties:
+                  ok: { type: boolean, const: true }
+                  bet: { $ref: "#/components/schemas/Bet" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /leaderboard:
+    get:
+      tags: [Betting]
+      operationId: getLeaderboard
+      summary: Bettors by balance
+      x-status: live
+      x-today: GET /api/bet/leaderboard
+      responses:
+        "200":
+          description: Every user, richest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, board]
+                properties:
+                  ok: { type: boolean, const: true }
+                  board:
+                    type: array
+                    items:
+                      type: object
+                      required: [handle, balance, bets]
+                      properties:
+                        handle: { $ref: "#/components/schemas/Handle" }
+                        balance: { $ref: "#/components/schemas/Credits" }
+                        bets: { type: integer, description: Bets ever placed. }
+
+  /audit:
+    get:
+      tags: [Betting]
+      operationId: getAudit
+      summary: Audit the book
+      description: >-
+        Runs the full audit on request: the ledger's hash chain, that every entry balances, that every bet's
+        stake, price and collateral agree, that every settled bet was paid exactly what its grade owes, and
+        that every revealed seed follows from its commitment. `ok` is false if anything fails.
+      x-status: live
+      x-today: GET /api/bet/audit
+      responses:
+        "200":
+          description: The audit result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, violations, ledgerHead, ledgerEntries, bets, houseBalance]
+                properties:
+                  ok: { type: boolean }
+                  violations:
+                    type: array
+                    items: { type: string }
+                  ledgerHead: { $ref: "#/components/schemas/Sha256" }
+                  ledgerEntries: { type: integer }
+                  bets: { type: integer }
+                  houseBalance: { $ref: "#/components/schemas/Credits" }
+
+  /matches:
+    post:
+      tags: [Matches]
+      operationId: createMatch
+      summary: Create a match
+      description: |
+        Creates a match with two to four seats. Each seat names a bot and who controls it: a built-in brain, a
+        remote controller, a recorded input log, or nothing.
+
+        A match with no remote seat and a lockstep clock runs to completion inside this request and the
+        response already holds its result (about 10 ms). Otherwise the match waits in `lobby` until every
+        remote seat is connected and ready, then counts down.
+
+        Driven matches are never priced and never bettable: see Integrity in the guide.
+      x-status: proposed
+      x-today: Driver.start() in src/sim/driver.ts runs the built-in-brain case
+      security: [{ bearer: [drive] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MatchRequest" }
+            examples:
+              pilot:
+                summary: A human pilot against three stock bots, in real time
+                value:
+                  kind: exhibition
+                  clock: { mode: realtime }
+                  seats:
+                    - bot: { entry: mine }
+                      controller: { type: remote, level: direct, assists: { autoFire: true } }
+                    - { bot: { stock: hammer }, controller: { type: builtin, brain: trained } }
+                    - { bot: { stock: flipper }, controller: { type: builtin, brain: trained } }
+                    - { bot: { stock: ram }, controller: { type: builtin, brain: rules } }
+              latencyStudy:
+                summary: The same controller at 150 ms of simulated lag, stepped as fast as it can answer
+                value:
+                  kind: sandbox
+                  seed: 4117
+                  clock: { mode: lockstep, stepTicks: 2 }
+                  seats:
+                    - bot: { stock: saw }
+                      controller: { type: remote, level: direct }
+                      net: { uplinkMs: 75, downlinkMs: 75, jitterMs: 15, lossPct: 1, seed: 9 }
+                    - { bot: { stock: hammer }, controller: { type: builtin, brain: rules } }
+              commander:
+                summary: A language model choosing maneuvers, the server driving the motors
+                value:
+                  kind: sandbox
+                  clock: { mode: lockstep }
+                  seats:
+                    - bot: { stock: grabber }
+                      controller: { type: remote, level: intent }
+                    - { bot: { stock: spinner }, controller: { type: builtin, brain: rules } }
+      responses:
+        "200":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, match]
+                properties:
+                  ok: { type: boolean, const: true }
+                  match: { $ref: "#/components/schemas/Match" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    get:
+      tags: [Matches]
+      operationId: listMatches
+      summary: List matches
+      description: The caller's matches, plus public exhibitions when `scope=public`.
+      x-status: proposed
+      security: [{ bearer: [drive] }]
+      parameters:
+        - name: scope
+          in: query
+          schema: { type: string, enum: [mine, public], default: mine }
+        - name: phase
+          in: query
+          schema: { $ref: "#/components/schemas/MatchPhase" }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: A page of matches, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, items, nextCursor]
+                properties:
+                  ok: { type: boolean, const: true }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Match" }
+                  nextCursor: { $ref: "#/components/schemas/NextCursor" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /matches/{matchId}:
+    get:
+      tags: [Matches]
+      operationId: getMatch
+      summary: Read a match
+      description: Configuration, seats, phase and (once ended) the result. Season fixtures are readable here too, by their `matchId`.
+      x-status: proposed
+      security: [{}, { bearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/MatchId"
+      responses:
+        "200":
+          description: The match.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, match]
+                properties:
+                  ok: { type: boolean, const: true }
+                  match: { $ref: "#/components/schemas/Match" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Matches]
+      operationId: abortMatch
+      summary: Abort a match
+      description: Only its creator may abort it. An aborted match has no result and its replay is discarded.
+      x-status: proposed
+      security: [{ bearer: [drive] }]
+      parameters:
+        - $ref: "#/components/parameters/MatchId"
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /matches/{matchId}/seats/{seat}/claim:
+    post:
+      tags: [Matches]
+      operationId: claimSeat
+      summary: Claim a seat
+      description: >-
+        Takes a remote seat that was created with `claim: invite` (send the invite code) or `claim: open`.
+        Seats created with `claim: owner` already belong to the match's creator.
+      x-status: proposed
+      security: [{ bearer: [drive] }]
+      parameters:
+        - $ref: "#/components/parameters/MatchId"
+        - $ref: "#/components/parameters/Seat"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                invite: { type: string }
+      responses:
+        "200":
+          description: The seat is the caller's.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, match]
+                properties:
+                  ok: { type: boolean, const: true }
+                  match: { $ref: "#/components/schemas/Match" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /matches/{matchId}/state:
+    get:
+      tags: [Matches]
+      operationId: getMatchState
+      summary: Latest world state
+      description: >-
+        The same snapshot the sockets stream, for clients that poll. Subject to the caller's seat `net`
+        conditioning when called with a seat's credentials and `seat` is given.
+      x-status: proposed
+      security: [{}, { bearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/MatchId"
+        - name: seat
+          in: query
+          description: Read as this seat (applies its downlink conditioning and fills `you`).
+          schema: { $ref: "#/components/schemas/SeatIndex" }
+      responses:
+        "200":
+          description: The state.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, state]
+                properties:
+                  ok: { type: boolean, const: true }
+                  state: { $ref: "#/components/schemas/WorldState" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /matches/{matchId}/seats/{seat}/sense:
+    get:
+      tags: [Matches]
+      operationId: getSense
+      summary: What this bot perceives
+      description: |
+        The decision-level view a built-in brain gets, for one bot at this moment:
+
+        * `perception`: words and buckets, written for a language model.
+        * `facts`: the same moment as numbers, written for code.
+        * `available`: the maneuvers that are legal right now.
+
+        This is the natural input for a commander. Call it, decide, then `PUT .../intent`.
+      x-status: proposed
+      x-today: sense() in src/sim/perception.ts; the browser posts the same object to POST /api/decide
+      security: [{ bearer: [drive] }]
+      parameters:
+        - $ref: "#/components/parameters/MatchId"
+        - $ref: "#/components/parameters/Seat"
+      responses:
+        "200":
+          description: The sense.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, sense]
+                properties:
+                  ok: { type: boolean, const: true }
+                  sense: { $ref: "#/components/schemas/Sense" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /matches/{matchId}/seats/{seat}/intent:
+    put:
+      tags: [Matches]
+      operationId: putIntent
+      summary: Command a maneuver
+      description: |
+        Commander control over HTTP. Sets what the bot is trying to do; the server's controller turns it into
+        throttle, steering and weapon triggers at 60 Hz, with hazard avoidance.
+
+        An intent takes effect at the bot's next decision point (every 250 to 450 ms of fight time depending
+        on its sensors level, sooner after an urgent event) and stays in force until replaced. A maneuver
+        that is not installed, or not in `available` at that decision point, is refused and the seat's
+        fallback brain decides instead.
+      x-status: proposed
+      security: [{ bearer: [drive] }]
+      parameters:
+        - $ref: "#/components/parameters/MatchId"
+        - $ref: "#/components/parameters/Seat"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IntentInput" }
+            example: { maneuver: flank, target: "PILEDRIVER", basedOnTick: 1310, note: "hammer is recharging" }
+      responses:
+        "200": { $ref: "#/components/responses/InputAccepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /matches/{matchId}/seats/{seat}/control:
+    put:
+      tags: [Matches]
+      operationId: putControl
+      summary: Set the motors
+      description: |
+        Direct control over HTTP. Fine for lockstep matches and slow experiments; for realtime piloting use
+        the seat socket, which carries the same frame without a request per input.
+
+        Each channel present in the frame overrides the controller for that channel. Channels left out stay
+        with the controller (in `hybrid`) or hold their last value (in `direct`). See Control levels in the
+        guide.
+      x-status: proposed
+      security: [{ bearer: [drive] }]
+      parameters:
+        - $ref: "#/components/parameters/MatchId"
+        - $ref: "#/components/parameters/Seat"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ControlFrame" }
+            example: { throttle: 1, steer: -0.35, trigger: false, basedOnTick: 1310 }
+      responses:
+        "200": { $ref: "#/components/responses/InputAccepted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /matches/{matchId}/step:
+    post:
+      tags: [Matches]
+      operationId: stepMatch
+      summary: Advance a lockstep match
+      description: |
+        The whole control loop in one call, in the style of a reinforcement-learning environment: submit
+        inputs for the seats you hold, advance, and get back what happened.
+
+        The match advances `ticks` ticks (default: the match's `stepTicks`) once every remote seat has
+        submitted for this step. If you hold every remote seat the call returns as soon as the ticks are
+        simulated. Wall-clock time does not exist in lockstep: a model that takes four seconds to answer plays
+        exactly the same match as one that takes four milliseconds. Latency is whatever the seat's `net` says
+        it is.
+
+        Not available on realtime matches.
+      x-status: proposed
+      security: [{ bearer: [drive] }]
+      parameters:
+        - $ref: "#/components/parameters/MatchId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                inputs:
+                  type: object
+                  description: Keyed by seat index. Seats you hold and leave out keep their last input.
+                  additionalProperties:
+                    type: object
+                    properties:
+                      control: { $ref: "#/components/schemas/ControlFrame" }
+                      intent: { $ref: "#/components/schemas/IntentInput" }
+                ticks: { type: integer, minimum: 1, maximum: 600 }
+                observe:
+                  type: array
+                  description: What to return. Default `[state, events]`.
+                  items: { type: string, enum: [state, events, sense] }
+            example:
+              inputs: { "0": { control: { throttle: 1, steer: 0.2, trigger: true } } }
+              ticks: 2
+              observe: [state, events]
+      responses:
+        "200":
+          description: The step's outcome.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, tick, done]
+                properties:
+                  ok: { type: boolean, const: true }
+                  tick: { $ref: "#/components/schemas/Tick" }
+                  done: { type: boolean }
+                  state: { $ref: "#/components/schemas/WorldState" }
+                  events:
+                    type: array
+                    items: { $ref: "#/components/schemas/TickedEvent" }
+                  senses:
+                    type: object
+                    description: Keyed by seat index, for the seats you hold.
+                    additionalProperties: { $ref: "#/components/schemas/Sense" }
+                  result:
+                    oneOf: [{ $ref: "#/components/schemas/MatchResult" }, { type: "null" }]
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /matches/{matchId}/fork:
+    post:
+      tags: [Matches]
+      operationId: forkMatch
+      summary: Branch a match
+      description: |
+        Sandbox lockstep matches only. Copies the whole match at its current tick (world, random stream,
+        decision timers, pending inputs) into a new match that can be stepped independently. A fork stepped
+        with the same inputs replays the original exactly, and sibling forks share their random numbers, so
+        comparing two lines of play is low-noise. This is the primitive for search-based controllers and for
+        "what if I had flanked" analysis.
+      x-status: proposed
+      x-today: Driver.fork() and World.clone() (about 5 microseconds)
+      security: [{ bearer: [drive] }]
+      parameters:
+        - $ref: "#/components/parameters/MatchId"
+      responses:
+        "200":
+          description: The new match, paused at the same tick.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, match]
+                properties:
+                  ok: { type: boolean, const: true }
+                  match: { $ref: "#/components/schemas/Match" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /matches/{matchId}/events:
+    get:
+      tags: [Matches]
+      operationId: listMatchEvents
+      summary: Match events
+      description: Everything that happened, in tick order. Poll with `sinceTick` to follow a live match without a socket.
+      x-status: proposed
+      security: [{}, { bearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/MatchId"
+        - name: sinceTick
+          in: query
+          schema: { $ref: "#/components/schemas/Tick" }
+        - name: type
+          in: query
+          description: Only these event types. Repeat for several.
+          schema: { type: array, items: { type: string } }
+          style: form
+          explode: true
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Events.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, tick, events]
+                properties:
+                  ok: { type: boolean, const: true }
+                  tick: { $ref: "#/components/schemas/Tick" }
+                  events:
+                    type: array
+                    items: { $ref: "#/components/schemas/TickedEvent" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /matches/{matchId}/replay:
+    get:
+      tags: [Matches]
+      operationId: getReplay
+      summary: Replay file
+      description: |
+        Everything needed to re-run the match bit for bit on the same engine version: the seed, the line-up's
+        builds, each built-in seat's brain, and the input log of every driven seat with the tick each input
+        took effect. Re-simulating a replay and comparing `resultHash` is the check that a result is honest.
+
+        Available once the match has ended. For season fixtures it is the public proof behind the seed.
+      x-status: proposed
+      security: [{}, { bearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/MatchId"
+      responses:
+        "200":
+          description: The replay.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, replay]
+                properties:
+                  ok: { type: boolean, const: true }
+                  replay: { $ref: "#/components/schemas/Replay" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /matches/{matchId}/timing:
+    get:
+      tags: [Matches]
+      operationId: getTiming
+      summary: Timing report
+      description: |
+        Per seat, what the network actually did to control: round-trip time, how stale the observation behind
+        each input was, how many inputs arrived late or not at all, and how long the seat spent on hold-last
+        or on its fallback brain. Available during the match and after it. In lockstep the figures are the
+        configured `net` conditioning made exact; in realtime they are measurements plus the conditioning.
+      x-status: proposed
+      security: [{ bearer: [drive] }]
+      parameters:
+        - $ref: "#/components/parameters/MatchId"
+      responses:
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, tick, seats]
+                properties:
+                  ok: { type: boolean, const: true }
+                  tick: { $ref: "#/components/schemas/Tick" }
+                  seats:
+                    type: array
+                    items: { $ref: "#/components/schemas/SeatTiming" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/season/advance:
+    post:
+      tags: [Admin]
+      operationId: advanceSeason
+      summary: Play the next match
+      description: |
+        Locks betting on the next fixture, reveals its seed, plays it, settles its markets and pays designer
+        prizes, in one step. After a Grand Final the next call starts a new season instead.
+
+        Returns as soon as the result is saved. Pricing the next round follows in the background; pass
+        `wait=1` to answer only once the next round's markets are open. Steps are queued and never overlap.
+
+        In production this needs `BET_ADMIN_TOKEN` to be set on the server and sent as `X-Admin-Token`; under
+        this spec it becomes the `admin` scope.
+      x-status: live
+      x-today: POST /api/bet/advance
+      security: [{ adminToken: [] }, { bearer: [admin] }]
+      parameters:
+        - name: wait
+          in: query
+          schema: { type: string, enum: ["1"] }
+      responses:
+        "200":
+          description: What happened.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    title: Season started
+                    required: [ok, started]
+                    properties:
+                      ok: { type: boolean, const: true }
+                      started: { $ref: "#/components/schemas/SeasonIdValue" }
+                  - type: object
+                    title: Match played
+                    required: [ok, played, label, order, headlines, champion, prizes]
+                    properties:
+                      ok: { type: boolean, const: true }
+                      played: { $ref: "#/components/schemas/FixtureId" }
+                      label: { type: string }
+                      order:
+                        type: array
+                        description: Bot ids in finishing order.
+                        items: { $ref: "#/components/schemas/BotId" }
+                      headlines:
+                        type: array
+                        items: { type: string }
+                      champion:
+                        oneOf: [{ $ref: "#/components/schemas/BotId" }, { type: "null" }]
+                      prizes:
+                        type: array
+                        items:
+                          type: object
+                          required: [handle, bot, amount]
+                          properties:
+                            handle: { $ref: "#/components/schemas/Handle" }
+                            bot: { $ref: "#/components/schemas/BotId" }
+                            amount: { $ref: "#/components/schemas/Credits" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /admin/season/clock:
+    get:
+      tags: [Admin]
+      operationId: getClock
+      summary: Read the match clock
+      x-status: proposed
+      x-today: "`nextMatchAt` in GET /api/bet/season"
+      security: [{ bearer: [admin] }]
+      responses:
+        "200":
+          description: The clock.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SeasonClock" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [Admin]
+      operationId: setClock
+      summary: Set the match clock
+      description: >-
+        How often the house plays the next match, and how long it rests between a Grand Final and the next
+        season. `matchEverySeconds: 0` stops the clock, so the season moves only on `advance`.
+      x-status: proposed
+      x-today: BET_MATCH_EVERY and BET_SEASON_GAP environment variables, read at start-up
+      security: [{ bearer: [admin] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [matchEverySeconds]
+              properties:
+                matchEverySeconds: { type: number, minimum: 0 }
+                seasonGapSeconds: { type: number, minimum: 0 }
+      responses:
+        "200":
+          description: The clock as set.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SeasonClock" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: |
+        `Authorization: Bearer <credential>`. Three kinds of credential are accepted:
+
+        * the registration token from `POST /users` (64 hex characters): every scope except `admin`;
+        * an API key from `POST /me/keys` (`s1_` + 64 hex): the scopes it was minted with;
+        * a browser session token issued after OAuth sign-in (provisional, see the guide).
+
+        The scopes written beside each operation are the scopes an API key needs.
+    adminToken:
+      type: apiKey
+      in: header
+      name: X-Admin-Token
+      description: The value of `BET_ADMIN_TOKEN` on the server. Today's mechanism for `advance`; replaced by the `admin` scope.
+
+  parameters:
+    SeasonId:
+      name: seasonId
+      in: path
+      required: true
+      description: A season id such as `s12`, or `current`.
+      schema:
+        type: string
+        pattern: "^(current|s[1-9][0-9]*)$"
+    MatchId:
+      name: matchId
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/MatchIdValue" }
+    Seat:
+      name: seat
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/SeatIndex" }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      description: The `nextCursor` of the previous page.
+      schema: { type: string }
+
+  responses:
+    Ok:
+      description: Done.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok]
+            properties:
+              ok: { type: boolean, const: true }
+    InputAccepted:
+      description: The input was queued. `effectiveTick` is when it will reach the simulation, after any uplink conditioning.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok, tick, effectiveTick]
+            properties:
+              ok: { type: boolean, const: true }
+              tick: { $ref: "#/components/schemas/Tick" }
+              effectiveTick: { $ref: "#/components/schemas/Tick" }
+              late: { type: boolean, description: True when `forTick` had already passed and the input was applied at once. }
+    BadRequest:
+      description: The request is malformed. Nothing changed.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { ok: false, code: bad_request, error: "handle must be 3 to 16 letters, digits, - or _" }
+    Unauthorized:
+      description: No valid credential.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { ok: false, code: unauthorized, error: "register first, then send Authorization: Bearer <token>" }
+    Forbidden:
+      description: The credential is valid but lacks the scope, or the resource belongs to someone else.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { ok: false, code: forbidden, error: "this key lacks the drive scope" }
+    NotFound:
+      description: No such resource.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { ok: false, code: not_found, error: "no such match" }
+    Conflict:
+      description: The resource is in the wrong state for this request.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { ok: false, code: wrong_phase, error: "the match has ended" }
+    RateLimited:
+      description: Too many requests. Retry after the number of seconds in `Retry-After`.
+      headers:
+        Retry-After: { schema: { type: integer } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { ok: false, code: rate_limited, error: "slow down" }
+    ServerError:
+      description: The server failed. Safe to retry `advance`; steps are queued and idempotent per fixture.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    # ---- primitives ---------------------------------------------------------------------------------
+    Millis: { type: integer, description: Milliseconds since the Unix epoch., examples: [1794596531000] }
+    Tick:
+      type: integer
+      minimum: 0
+      description: Simulation ticks since the match was created. 60 ticks are one second. The countdown is ticks 0 to 179; the bell is tick 180.
+    Credits: { type: integer, description: Whole play-money credits. }
+    CentiOdds:
+      type: integer
+      description: Decimal odds in hundredths. 235 is 2.35, paying floor(stake x 235 / 100) in total. 0 means not offered.
+      examples: [235]
+    Sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+    UserId: { type: string, pattern: "^u-[0-9a-f]{12}$", examples: ["u-3fa91c07b2d4"] }
+    Handle: { type: string, pattern: "^[A-Za-z0-9_-]{3,16}$", examples: ["pit-boss"] }
+    BotId:
+      type: string
+      description: A bot's callsign, which is also its id in a league or a match.
+      pattern: "^[A-Z0-9][A-Z0-9 -]{1,14}[A-Z0-9]$"
+      examples: ["RIPSAW"]
+    SeasonIdValue: { type: string, pattern: "^s[1-9][0-9]*$", examples: ["s12"] }
+    FixtureId:
+      type: string
+      description: "`w1a` to `w4b` for league weeks 1 to 4 (two matches a week), then `lastchance` and `final`."
+      examples: ["w1a", "lastchance", "final"]
+    MarketId:
+      type: string
+      description: "`{seasonId}/{fixtureId or w{week} or season}/{market}`. Contains `/`; pass it in a query or a body, never in a path."
+      examples: ["s12/w1a/win", "s12/w1a/hcap/CLAMP~RIPSAW", "s12/season/champion"]
+    MatchIdValue:
+      type: string
+      description: "`m-` + 12 hex for created matches; `{seasonId}.{fixtureId}` for season fixtures."
+      examples: ["m-9c41d07be2a1", "s12.w1a"]
+    SeatIndex: { type: integer, minimum: 0, maximum: 3, description: Seat 0 starts in the south-west corner; seats run anticlockwise as seen from above with north up. }
+    EngineVersion:
+      type: string
+      description: The simulation build. Replays are bit-exact only on the engine version that recorded them.
+      examples: ["0.3.2"]
+    NextCursor:
+      oneOf: [{ type: string }, { type: "null" }]
+      description: Pass as `cursor` for the next page. Null on the last page.
+    Scope: { type: string, enum: [account, bets, bots, drive] }
+
+    Error:
+      type: object
+      required: [ok, error]
+      properties:
+        ok: { type: boolean, const: false }
+        code:
+          type: string
+          description: Machine-readable reason. Present on every v1 error; today's server sends it only on bet rejections.
+          examples: [bad_request, unauthorized, forbidden, not_found, wrong_phase, rate_limited, seat_taken, not_your_seat, not_lockstep, not_sandbox]
+        error: { type: string, description: A sentence for a person. }
+
+    # ---- account ------------------------------------------------------------------------------------
+    ApiKey:
+      type: object
+      required: [id, name, scopes, createdAt, lastUsedAt, expiresAt]
+      properties:
+        id: { type: string, examples: ["k-51b0c2"] }
+        name: { type: string }
+        scopes:
+          type: array
+          items: { $ref: "#/components/schemas/Scope" }
+        createdAt: { $ref: "#/components/schemas/Millis" }
+        lastUsedAt:
+          oneOf: [{ $ref: "#/components/schemas/Millis" }, { type: "null" }]
+        expiresAt:
+          oneOf: [{ $ref: "#/components/schemas/Millis" }, { type: "null" }]
+    WalletRow:
+      type: object
+      required: [seq, t, kind, ref, delta]
+      properties:
+        seq: { type: integer, description: The ledger entry's sequence number. }
+        t: { $ref: "#/components/schemas/Millis" }
+        kind: { type: string, examples: [grant, stake, payout, refund] }
+        ref: { type: string, description: "What the entry is about: a bet id, a market id, `registration`, `stipend:s12`, `prize:s12:w1a:TIN OPENER`." }
+        delta: { type: integer, description: Signed credits. Positive is money in. }
+
+    # ---- design -------------------------------------------------------------------------------------
+    BotKind:
+      type: string
+      description: The weapon system, which fixes the chassis.
+      enum: [saw, hammer, grabber, flipper, spinner, torch, ram]
+    PartKey: { type: string, enum: [armor, motor, frame, steering, power, cycle, wedge, traction, gyro, sensors] }
+    Maneuver:
+      type: string
+      description: A technique. `engage`, `flank`, `circle`, `retreat` and `hold` fit any weapon; the rest belong to one or two weapon systems (see `techniques` in `/rules`).
+      enum: [engage, flank, circle, retreat, hold, spin_up, strike_now, grab_now, drag_to_pit, drag_to_saws, crush, release, flip_now, burn, ram_now, shove_to_pit, shove_to_saws]
+    Levels:
+      type: object
+      description: One level, 0 to 5, per part. A level costs 0, 1, 3, 6, 10 or 15 build points.
+      additionalProperties: false
+      properties:
+        armor: { $ref: "#/components/schemas/Level" }
+        motor: { $ref: "#/components/schemas/Level" }
+        frame: { $ref: "#/components/schemas/Level" }
+        steering: { $ref: "#/components/schemas/Level" }
+        power: { $ref: "#/components/schemas/Level" }
+        cycle: { $ref: "#/components/schemas/Level" }
+        wedge: { $ref: "#/components/schemas/Level" }
+        traction: { $ref: "#/components/schemas/Level" }
+        gyro: { $ref: "#/components/schemas/Level" }
+        sensors: { $ref: "#/components/schemas/Level" }
+    Level: { type: integer, minimum: 0, maximum: 5 }
+    Condition:
+      type: object
+      description: One test in the condition language, for example "target.dist < 3".
+      required: [s, op, v]
+      properties:
+        s:
+          type: string
+          description: The subject. The full list, with each subject's type, is `subjects` in `/rules`.
+          examples: [me.hp, target.dist, threat.exists, arena.pitOpen]
+        op: { type: string, enum: ["<", ">", is, not] }
+        v:
+          description: A number, a boolean, or a weapon system, according to the subject's type.
+          oneOf: [{ type: number }, { type: boolean }, { $ref: "#/components/schemas/BotKind" }]
+    Rule:
+      type: object
+      description: One row of the rule tree. Rules are tried top to bottom; the first whose conditions all hold fires.
+      required: [id, when, maneuver, target, danger, dangerIfThreat, note]
+      properties:
+        id: { type: string }
+        when:
+          type: array
+          description: All must hold. Empty always fires, which is how a tree ends.
+          maxItems: 8
+          items: { $ref: "#/components/schemas/Condition" }
+        maneuver: { $ref: "#/components/schemas/Maneuver" }
+        target: { type: string, enum: [policy, nearest, weakest, in_reach, threat, held] }
+        danger: { type: number, minimum: 0, maximum: 1 }
+        dangerIfThreat: { type: number, minimum: 0, maximum: 1 }
+        note: { type: string, description: "Ticker text. `{target}`, `{threat}` and `{held}` are substituted." }
+    TrainedStyle:
+      type: object
+      description: Personality of the trained brain. Each slider reweights what the network predicts; none needs retraining.
+      properties:
+        aggression: { type: number, minimum: 0, maximum: 2 }
+        caution: { type: number, minimum: 0, maximum: 2 }
+        killer: { type: number, minimum: 0, maximum: 2 }
+        survival: { type: number, minimum: 0, maximum: 2 }
+        showboat: { type: number, minimum: 0, maximum: 2 }
+        hazards: { type: number, minimum: 0, maximum: 2 }
+        decisiveness: { type: number, minimum: 0, maximum: 1 }
+        commitment: { type: number, minimum: 0, maximum: 1 }
+        grudge: { type: number, minimum: 0, maximum: 1 }
+        nerves: { type: number, minimum: 0, maximum: 2 }
+        bias:
+          type: object
+          description: Per technique, -1 to 1.
+          additionalProperties: { type: number, minimum: -1, maximum: 1 }
+    BotLogic:
+      type: object
+      description: The bot's deterministic brain (the rule tree) and what its model brains are told.
+      required: [targeting, rules, jev]
+      properties:
+        targeting:
+          type: object
+          required: [prefer, finishBelow, finishWithin]
+          properties:
+            prefer: { type: string, enum: [nearest, weakest] }
+            finishBelow: { type: number, description: Switch to the weakest opponent when its health fraction is below this… }
+            finishWithin: { type: number, description: …and it is at most this many metres farther away than the nearest. }
+        rules:
+          type: array
+          items: { $ref: "#/components/schemas/Rule" }
+        trained: { $ref: "#/components/schemas/TrainedStyle" }
+        jev:
+          type: object
+          required: [maneuverPrompt, targetPrompt, dangerPrompt, techniques, speculative]
+          properties:
+            maneuverPrompt: { type: string, maxLength: 700 }
+            targetPrompt: { type: string, maxLength: 700 }
+            dangerPrompt: { type: string, maxLength: 700 }
+            techniques:
+              type: object
+              description: Keyed by maneuver. What Jev reads for each option, and when the option may be offered.
+              additionalProperties:
+                type: object
+                required: [description, when]
+                properties:
+                  description: { type: string }
+                  when:
+                    type: array
+                    items: { $ref: "#/components/schemas/Condition" }
+            speculative:
+              type: array
+              items:
+                type: object
+                required: [key, prompt, when]
+                properties:
+                  key: { type: string }
+                  prompt: { type: string }
+                  when:
+                    type: array
+                    items: { $ref: "#/components/schemas/Condition" }
+    BotBuild:
+      type: object
+      description: Everything a designer can change about a bot, as plain data. Budget 60 points across parts and techniques.
+      required: [id, name, tagline, kind, color, accent, levels, techniques, logic]
+      properties:
+        id: { type: string, description: Assigned by the server. }
+        name: { $ref: "#/components/schemas/BotId" }
+        tagline: { type: string, maxLength: 700 }
+        kind: { $ref: "#/components/schemas/BotKind" }
+        color: { type: integer, minimum: 0, maximum: 16777215, description: Body colour as 0xRRGGBB. }
+        accent: { type: integer, minimum: 0, maximum: 16777215 }
+        levels: { $ref: "#/components/schemas/Levels" }
+        techniques:
+          type: array
+          description: Installed techniques. Must include `engage`.
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/Maneuver" }
+        logic: { $ref: "#/components/schemas/BotLogic" }
+    BotBuildInput:
+      type: object
+      description: >-
+        A build as submitted. Only `name` and `kind` are required; anything missing or malformed is filled from
+        the stock build of the same `kind`, levels are clamped to 0..5, and `id` is ignored.
+      required: [name, kind]
+      properties:
+        name: { type: string, description: Trimmed and upper-cased, then must match the callsign pattern. }
+        kind: { $ref: "#/components/schemas/BotKind" }
+        tagline: { type: string }
+        color: { type: integer }
+        accent: { type: integer }
+        levels: { $ref: "#/components/schemas/Levels" }
+        techniques:
+          type: array
+          items: { $ref: "#/components/schemas/Maneuver" }
+        logic: { $ref: "#/components/schemas/BotLogic" }
+    Cost:
+      type: object
+      required: [parts, techniques, total, over]
+      properties:
+        parts: { type: integer }
+        techniques: { type: integer }
+        total: { type: integer }
+        over: { type: integer, description: Points over the budget. 0 when legal. }
+    Derived:
+      type: object
+      description: The numbers the simulation runs on, derived from a build. Mass costs speed, acceleration and turn rate.
+      required: [hp, mass, maxSpeed, accel, turnRate, armor, radius, footprint, weightClass, cadence, awareness]
+      properties:
+        hp: { type: number, description: 200 plus 50 per frame level. }
+        mass: { type: number }
+        maxSpeed: { type: number, description: Metres per second. }
+        accel: { type: number, description: Metres per second squared. }
+        turnRate: { type: number, description: Radians per second at full steer. }
+        armor: { type: number, description: Fraction of incoming damage shrugged off. }
+        radius: { type: number, description: Metres. Used for weapon reach, perception ranges and hazards. }
+        footprint:
+          type: object
+          description: The oriented collision box, in metres from the axle centre.
+          required: [front, back, half]
+          properties:
+            front: { type: number }
+            back: { type: number }
+            half: { type: number }
+        weightClass: { type: string, enum: [lightweight, middleweight, heavyweight, superheavy] }
+        flipResist: { type: number }
+        knockResist: { type: number }
+        stunResist: { type: number }
+        impactResist: { type: number }
+        cadence: { type: number, description: "Seconds between decisions: 0.45 minus 0.04 per sensors level, never below 0.25." }
+        awareness: { type: number, description: Extra metres of threat awareness. }
+        tuning:
+          type: object
+          description: Weapon numbers for this build's weapon system (spin-up time, damage, cooldown and so on).
+          additionalProperties: true
+    Problem:
+      type: object
+      required: [level, text]
+      properties:
+        level: { type: string, enum: [error, warn] }
+        text: { type: string }
+    BotEntry:
+      type: object
+      description: A user's bot, waiting for a season or playing in one.
+      required: [name, kind, tagline, cost, submittedAt, lastSeason, playing, build]
+      properties:
+        name: { $ref: "#/components/schemas/BotId" }
+        kind: { $ref: "#/components/schemas/BotKind" }
+        tagline: { type: string }
+        cost: { type: integer }
+        submittedAt: { $ref: "#/components/schemas/Millis" }
+        lastSeason:
+          oneOf: [{ type: integer }, { type: "null" }]
+          description: The number of the last season it played in. Null if it has not played yet.
+        playing:
+          oneOf:
+            - type: object
+              required: [seasonId, as, current]
+              properties:
+                seasonId: { $ref: "#/components/schemas/SeasonIdValue" }
+                as: { $ref: "#/components/schemas/BotId" }
+                current: { type: boolean, description: False when the entry has been edited since the season froze its copy. }
+            - type: "null"
+        build: { $ref: "#/components/schemas/BotBuild" }
+    BotSource:
+      description: Where a seat's or an entrant's bot comes from.
+      oneOf:
+        - type: object
+          title: A stock build
+          required: [stock]
+          properties:
+            stock: { $ref: "#/components/schemas/BotKind" }
+        - type: object
+          title: The caller's entered bot
+          required: [entry]
+          properties:
+            entry: { type: string, const: mine }
+        - type: object
+          title: A season entrant
+          required: [season, bot]
+          properties:
+            season: { type: string, description: A season id or `current`. }
+            bot: { $ref: "#/components/schemas/BotId" }
+        - type: object
+          title: An inline build
+          required: [build]
+          properties:
+            build: { $ref: "#/components/schemas/BotBuildInput" }
+
+    # ---- seasons ------------------------------------------------------------------------------------
+    Stage: { type: string, enum: [league, lastchance, final] }
+    SeasonSummary:
+      type: object
+      required: [seasonId, startedAt, phase, champion, matchesPlayed]
+      properties:
+        seasonId: { $ref: "#/components/schemas/SeasonIdValue" }
+        startedAt: { $ref: "#/components/schemas/Millis" }
+        phase: { type: string, examples: ["Week 2 of 4", "Last Chance", "Season complete · RIPSAW is champion"] }
+        champion:
+          oneOf: [{ $ref: "#/components/schemas/BotId" }, { type: "null" }]
+        matchesPlayed: { type: integer, minimum: 0, maximum: 10 }
+    SeasonView:
+      type: object
+      required: [ok, seasonId, phase, champion, table, entrants, pricing, nextMatchAt, round, fairness, markets, settled]
+      properties:
+        ok: { type: boolean, const: true }
+        seasonId: { $ref: "#/components/schemas/SeasonIdValue" }
+        phase: { type: string }
+        champion:
+          oneOf: [{ $ref: "#/components/schemas/BotId" }, { type: "null" }]
+        table:
+          type: array
+          items: { $ref: "#/components/schemas/Standing" }
+        entrants:
+          type: array
+          items: { $ref: "#/components/schemas/EntrantSummary" }
+        pricing:
+          description: Progress of the pricing run in hand. Null when the round's markets are up to date.
+          oneOf:
+            - type: object
+              required: [progress]
+              properties:
+                progress: { type: number, minimum: 0, maximum: 1 }
+            - type: "null"
+        nextMatchAt:
+          description: When the match clock will play the next match. Null when there is no clock.
+          oneOf: [{ $ref: "#/components/schemas/Millis" }, { type: "null" }]
+        round:
+          type: array
+          description: The fixtures now open for betting.
+          items:
+            type: object
+            required: [id, label, bots, locked]
+            properties:
+              id: { $ref: "#/components/schemas/FixtureId" }
+              label: { type: string, examples: ["Week 1 · Match A"] }
+              bots:
+                type: array
+                items: { $ref: "#/components/schemas/BotId" }
+              locked: { type: boolean }
+        fairness:
+          type: array
+          items: { $ref: "#/components/schemas/FairRecord" }
+        markets:
+          type: array
+          items: { $ref: "#/components/schemas/Market" }
+        settled: { type: integer, description: How many of this season's markets are settled or void. }
+    Season:
+      type: object
+      description: A complete season state, as `/seasons/simulate` returns it.
+      required: [version, seed, startedAt, entrants, fixtures, records, champion]
+      properties:
+        version: { type: integer, const: 1 }
+        seed: { type: integer }
+        startedAt: { $ref: "#/components/schemas/Millis" }
+        entrants:
+          type: array
+          items: { $ref: "#/components/schemas/Entrant" }
+        fixtures:
+          type: array
+          items: { $ref: "#/components/schemas/Fixture" }
+        records:
+          type: array
+          items: { $ref: "#/components/schemas/MatchRecord" }
+        champion:
+          oneOf: [{ $ref: "#/components/schemas/BotId" }, { type: "null" }]
+    EntrantSummary:
+      type: object
+      required: [id, kind, tagline, origin, designer]
+      properties:
+        id: { $ref: "#/components/schemas/BotId" }
+        kind: { $ref: "#/components/schemas/BotKind" }
+        tagline: { type: string }
+        origin: { type: string, enum: [garage, library, stock, wildcard], description: "On the house server: `garage` for a designer's bot, `stock` or `wildcard` for the house's." }
+        designer:
+          oneOf: [{ $ref: "#/components/schemas/Handle" }, { type: "null" }]
+    Entrant:
+      allOf:
+        - $ref: "#/components/schemas/EntrantSummary"
+        - type: object
+          required: [build]
+          properties:
+            build: { $ref: "#/components/schemas/BotBuild" }
+    Standing:
+      type: object
+      description: "A league table row. Ties break on wins, eliminations, damage dealt, then entry order. Today's `/season` sends only id, rank, played, points and wins."
+      required: [id, rank, played, points, wins]
+      properties:
+        id: { $ref: "#/components/schemas/BotId" }
+        rank: { type: integer, minimum: 1, maximum: 8 }
+        played: { type: integer }
+        points: { type: integer }
+        wins: { type: integer }
+        elims: { type: integer }
+        damage: { type: number }
+        outs: { type: integer, description: Times this bot was eliminated. }
+        form:
+          type: array
+          description: Finishing places, oldest first.
+          items: { type: integer, minimum: 1, maximum: 4 }
+    Fixture:
+      type: object
+      required: [id, stage, week, label, bots, seed]
+      properties:
+        id: { $ref: "#/components/schemas/FixtureId" }
+        stage: { $ref: "#/components/schemas/Stage" }
+        week: { type: integer, description: 1 to 4 for the league, 5 for the Last Chance, 6 for the Grand Final. }
+        label: { type: string }
+        bots:
+          type: array
+          description: Bot ids in seat order.
+          items: { $ref: "#/components/schemas/BotId" }
+        seed: { type: integer, description: The simulation seed. On the house server it is hidden until lock, then set from the fairness record. }
+    FixtureView:
+      type: object
+      required: [id, stage, week, label, bots, locked, record, fairness, matchId]
+      properties:
+        id: { $ref: "#/components/schemas/FixtureId" }
+        stage: { $ref: "#/components/schemas/Stage" }
+        week: { type: integer }
+        label: { type: string }
+        bots:
+          type: array
+          items: { $ref: "#/components/schemas/BotId" }
+        locked: { type: boolean, description: Betting on this fixture has closed. }
+        record:
+          oneOf: [{ $ref: "#/components/schemas/MatchRecord" }, { type: "null" }]
+        fairness:
+          oneOf: [{ $ref: "#/components/schemas/FairRecord" }, { type: "null" }]
+        matchId:
+          description: Set once the fixture has been played. Use it with `/matches/{matchId}/replay`.
+          oneOf: [{ $ref: "#/components/schemas/MatchIdValue" }, { type: "null" }]
+    Kill:
+      type: object
+      required: [killer, victim, how, t]
+      properties:
+        killer:
+          oneOf: [{ $ref: "#/components/schemas/BotId" }, { type: "null" }]
+        victim: { $ref: "#/components/schemas/BotId" }
+        how: { type: string, enum: [destroyed, pitted] }
+        t: { type: number, description: Fight time in seconds. }
+    PlaceRow:
+      type: object
+      required: [id, place, hp, hpFrac, damage, eliminated, by, elims, topDamage, points]
+      properties:
+        id: { $ref: "#/components/schemas/BotId" }
+        place: { type: integer, minimum: 1, maximum: 4 }
+        hp: { type: number }
+        hpFrac: { type: number }
+        damage: { type: number, description: Damage dealt. }
+        eliminated:
+          oneOf: [{ type: string, enum: [destroyed, pitted] }, { type: "null" }]
+        by:
+          oneOf: [{ $ref: "#/components/schemas/BotId" }, { type: "null" }]
+        elims: { type: integer }
+        topDamage: { type: boolean }
+        points: { type: integer, description: "Match points: 5, 3, 1 or 0 by place, plus 1 per elimination, plus 1 for top damage." }
+    MatchRecord:
+      type: object
+      required: [fixtureId, stage, week, label, rows, kills, duration, reason, simulated, rankBefore, upset, headlines]
+      properties:
+        fixtureId: { $ref: "#/components/schemas/FixtureId" }
+        stage: { $ref: "#/components/schemas/Stage" }
+        week: { type: integer }
+        label: { type: string }
+        rows:
+          type: array
+          description: The official classification, winner first.
+          items: { $ref: "#/components/schemas/PlaceRow" }
+        kills:
+          type: array
+          items: { $ref: "#/components/schemas/Kill" }
+        duration: { type: number, description: Fight length in seconds, to a tenth. }
+        reason: { type: string, enum: [last_standing, judges, draw] }
+        simulated: { type: boolean }
+        rankBefore:
+          type: object
+          additionalProperties: { type: integer }
+        upset: { type: boolean }
+        headlines:
+          type: array
+          items: { type: string }
+    FairRecord:
+      type: object
+      required: [fixtureId, commit, anchor, secret, seed]
+      properties:
+        fixtureId: { $ref: "#/components/schemas/FixtureId" }
+        commit: { $ref: "#/components/schemas/Sha256" }
+        anchor:
+          description: The ledger head when betting closed. Null until then.
+          oneOf: [{ $ref: "#/components/schemas/Sha256" }, { type: "null" }]
+        secret:
+          oneOf: [{ type: string }, { type: "null" }]
+        seed:
+          oneOf: [{ type: integer }, { type: "null" }]
+    SeasonClock:
+      type: object
+      required: [ok, matchEverySeconds, seasonGapSeconds, nextMatchAt]
+      properties:
+        ok: { type: boolean, const: true }
+        matchEverySeconds: { type: number }
+        seasonGapSeconds: { type: number }
+        nextMatchAt:
+          oneOf: [{ $ref: "#/components/schemas/Millis" }, { type: "null" }]
+
+    # ---- betting ------------------------------------------------------------------------------------
+    MarketScope: { type: string, enum: [match, round, season] }
+    MarketKind:
+      type: string
+      description: |
+        * `match_win`: the winner of a match.
+        * `match_top2`: finish first or second ("to qualify" in the Last Chance).
+        * `match_hcap`: handicap between two bots on match points; a tie after the line is a push.
+        * `match_time`: fight length over or under a line; exactly the line is a push.
+        * `round_top`: most league points in the week; ties are a dead heat.
+        * `season_champion`: wins the Grand Final.
+        * `season_finalist`: reaches the Grand Final.
+        * `season_league`: tops the league table.
+        * `season_hcap`: handicap league, head starts fixed when the market opens; ties are a dead heat.
+      enum: [match_win, match_top2, match_hcap, match_time, round_top, season_champion, season_finalist, season_league, season_hcap]
+    MarketStatus:
+      type: string
+      description: "`open` and `suspended` alternate; then `closed`; then `settled` or `void`. Bets are taken only while open. A closed market never reopens."
+      enum: [open, suspended, closed, settled, void]
+    Grade:
+      description: How a selection finished. A fraction of a full win (1/1 wins, 0/1 loses, 1/n is an n-way dead heat), or `void` (stake returned).
+      oneOf:
+        - type: string
+          const: void
+        - type: object
+          required: [num, den]
+          properties:
+            num: { type: integer }
+            den: { type: integer }
+    Market:
+      type: object
+      required: [id, kind, scope, round, fixtureId, label, status, version, params, grades, selections]
+      properties:
+        id: { $ref: "#/components/schemas/MarketId" }
+        kind: { $ref: "#/components/schemas/MarketKind" }
+        scope: { $ref: "#/components/schemas/MarketScope" }
+        round: { type: integer, description: The season week. 0 for season-long markets. }
+        fixtureId:
+          oneOf: [{ $ref: "#/components/schemas/FixtureId" }, { type: "null" }]
+        label: { type: string, examples: ["Week 1 · Match A · Winner"] }
+        status: { $ref: "#/components/schemas/MarketStatus" }
+        version: { type: integer, description: Bumped on every reprice. }
+        params:
+          type: object
+          properties:
+            a: { $ref: "#/components/schemas/BotId" }
+            b: { $ref: "#/components/schemas/BotId" }
+            line2: { type: integer, description: "A line kept integral: half points for a handicap (3 is +1.5, added to `a`), half seconds for fight length (91 is 45.5 s)." }
+            handicaps:
+              type: object
+              description: Season handicap league. Whole league points added to each bot.
+              additionalProperties: { type: integer }
+        grades:
+          description: Set at settlement, keyed by selection id.
+          oneOf:
+            - type: object
+              additionalProperties: { $ref: "#/components/schemas/Grade" }
+            - type: "null"
+        selections:
+          type: array
+          items:
+            type: object
+            required: [id, text, price, maxStake]
+            properties:
+              id: { type: string, description: "A bot id, or `over` / `under`." }
+              text: { type: string, description: How it reads on a slip, with its line or head start., examples: ["RIPSAW +1.5", "Over 45.5s"] }
+              price: { $ref: "#/components/schemas/CentiOdds" }
+              maxStake: { $ref: "#/components/schemas/Credits" }
+    BetRequest:
+      type: object
+      required: [key, marketId, selectionId, stake]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 64, description: Idempotency key, unique per user per intended bet. }
+        marketId: { $ref: "#/components/schemas/MarketId" }
+        selectionId: { type: string }
+        stake: { type: integer, minimum: 1, description: "Whole credits. Limits per scope are in `/rules` (today: 1 to 100 per bet)." }
+        minPrice: { $ref: "#/components/schemas/CentiOdds" }
+    BetStatus: { type: string, enum: [open, won, part, lost, void], description: "`part` is a dead-heat share." }
+    Bet:
+      type: object
+      required: [id, key, userId, marketId, selectionId, stake, price, risk, placedAt, status, payout, settledAt]
+      properties:
+        id: { type: string, examples: ["house:b412"] }
+        key: { type: string }
+        userId: { $ref: "#/components/schemas/UserId" }
+        marketId: { $ref: "#/components/schemas/MarketId" }
+        selectionId: { type: string }
+        stake: { $ref: "#/components/schemas/Credits" }
+        price: { $ref: "#/components/schemas/CentiOdds" }
+        risk: { type: integer, description: "The house's collateral: floor(stake x price / 100) minus stake." }
+        placedAt: { $ref: "#/components/schemas/Millis" }
+        status: { $ref: "#/components/schemas/BetStatus" }
+        payout: { $ref: "#/components/schemas/Credits" }
+        settledAt:
+          oneOf: [{ $ref: "#/components/schemas/Millis" }, { type: "null" }]
+    BetRejection:
+      type: object
+      required: [ok, code, message]
+      properties:
+        ok: { type: boolean, const: false }
+        code:
+          type: string
+          description: |
+            * `bad_request`: a field is missing or malformed.
+            * `unknown_market`, `unknown_selection`.
+            * `market_closed`: suspended, closed, settled or void.
+            * `selection_unavailable`: not offered at any price right now.
+            * `stake_too_small`, `stake_too_large`: outside the per-bet limits. `maxStake` is set.
+            * `user_limit`: the caller's total stake on this market would pass the cap. `maxStake` is set.
+            * `insufficient_funds`.
+            * `price_changed`: the live price is below `minPrice`. `price` is set.
+            * `liability_limit`: the house's exposure on this selection is at its cap. `maxStake` is set.
+            * `house_limit`: the house bank cannot collateralise the bet.
+            * `key_reused`: the key was used for a different bet.
+            * `rate_limited`.
+          enum: [bad_request, unknown_market, unknown_selection, market_closed, selection_unavailable, stake_too_small, stake_too_large, user_limit, insufficient_funds, price_changed, liability_limit, house_limit, key_reused, rate_limited]
+        message: { type: string }
+        price: { $ref: "#/components/schemas/CentiOdds" }
+        maxStake: { $ref: "#/components/schemas/Credits" }
+
+    # ---- matches ------------------------------------------------------------------------------------
+    MatchPhase:
+      type: string
+      description: "`lobby` (waiting for remote seats), `countdown` (3 s, controls ignored), `fighting`, then `ended` or `aborted`."
+      enum: [lobby, countdown, fighting, ended, aborted]
+    BuiltinBrain:
+      type: string
+      description: |
+        * `rules`: the build's rule tree. Deterministic, free, the brain the house prices with.
+        * `trained`: the trained network with the build's style sliders. Deterministic.
+        * `jev`: Jev (TypeSafe System One) answering over the network. Realtime matches only, and only when `/health` reports `jev: true`. Not deterministic, so a match with a Jev seat replays from its recorded intents, not from the seed alone.
+      enum: [rules, trained, jev]
+    ClockConfig:
+      type: object
+      description: How simulated time relates to wall-clock time.
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          description: |
+            * `realtime`: the server steps 60 ticks per second of wall-clock time (times `speed`). Inputs take effect when they arrive.
+            * `lockstep`: the server steps only when every remote seat has submitted. No wall clock; fully reproducible.
+          enum: [realtime, lockstep]
+        speed: { type: number, minimum: 0.1, maximum: 8, default: 1, description: Realtime only. Sandbox matches may run slow or fast; exhibitions are always 1. }
+        stepTicks: { type: integer, minimum: 1, maximum: 60, default: 1, description: "Lockstep only. Ticks advanced per step: 1 is every frame, 6 is ten decisions a second." }
+        stepTimeoutMs: { type: integer, minimum: 0, default: 0, description: Lockstep only. If positive, a seat that has not submitted after this long is stepped on hold-last. 0 waits for ever (subject to the idle limit). }
+    NetConfig:
+      type: object
+      description: |
+        Synthetic network conditions, applied by the server between this seat's controller and the
+        simulation. Draws come from a stream seeded by `seed`, so a conditioned match is reproducible.
+
+        In lockstep these are the only latency there is, converted to whole ticks (rounded up). In realtime
+        they add to whatever the real network does.
+      properties:
+        uplinkMs: { type: number, minimum: 0, maximum: 2000, default: 0, description: Delay on this seat's inputs before the simulation sees them. }
+        downlinkMs: { type: number, minimum: 0, maximum: 2000, default: 0, description: "Delay on observations before the seat gets them. Add a human's reaction time here." }
+        jitterMs: { type: number, minimum: 0, maximum: 500, default: 0, description: Uniform plus-or-minus jitter per message, each way. Messages are not reordered. }
+        lossPct: { type: number, minimum: 0, maximum: 50, default: 0, description: "Share of messages dropped, each way. A lost input means hold-last; a lost observation is skipped." }
+        seed: { type: integer, default: 1 }
+    ObservationConfig:
+      type: object
+      properties:
+        rateHz: { type: integer, enum: [10, 20, 30, 60], default: 30, description: State snapshots per second of simulated time on the sockets. }
+        sense: { type: boolean, default: false, description: Also send `sense` at each of this seat's decision points. Always on for `intent` seats. }
+        events: { type: boolean, default: true }
+    SeatController:
+      description: Who drives a seat.
+      oneOf:
+        - type: object
+          title: Built-in brain
+          required: [type]
+          properties:
+            type: { type: string, const: builtin }
+            brain: { $ref: "#/components/schemas/BuiltinBrain" }
+            outputDelayMs:
+              type: number
+              minimum: 0
+              maximum: 1000
+              default: 0
+              description: Delays this brain's motor outputs. The measured difficulty dial for bots that face a human (see the table in the guide).
+        - type: object
+          title: Remote controller
+          required: [type, level]
+          properties:
+            type: { type: string, const: remote }
+            level:
+              type: string
+              description: |
+                * `intent`: the controller sends maneuvers; the server drives the motors.
+                * `direct`: the controller sends throttle, steering and triggers; nothing else moves the bot.
+                * `hybrid`: both. The server drives from the current intent, and any channel in a control frame overrides it for `holdTicks`.
+              enum: [intent, direct, hybrid]
+            claim:
+              type: string
+              description: Who may take the seat. `owner` is the match's creator.
+              enum: [owner, invite, open]
+              default: owner
+            fallback:
+              $ref: "#/components/schemas/BuiltinBrain"
+              description: The brain that decides when the controller is silent or sends something illegal. Default `rules`.
+            assists:
+              type: object
+              properties:
+                autoFire: { type: boolean, default: false, description: "The server fires the weapon when a target slides into reach, as it does for built-in brains. Worth about 9 points of win share at 200 ms of lag." }
+                hazardAvoid: { type: boolean, default: false, description: "`intent` and `hybrid` always avoid live hazards. In `direct` this nudges steering away from an open pit and raised saws." }
+            holdTicks: { type: integer, minimum: 1, maximum: 120, default: 15, description: How long a control channel keeps its last value with no new input before it lapses. }
+            takeoverMs: { type: integer, minimum: 0, default: 2000, description: Silence after which the fallback brain takes the seat until input resumes. 0 never takes over. }
+            maxLeadTicks: { type: integer, minimum: 0, maximum: 30, default: 6, description: "How far ahead an input may be scheduled with `forTick`." }
+        - type: object
+          title: Recorded inputs
+          required: [type, matchId, seat]
+          properties:
+            type: { type: string, const: replay }
+            matchId: { $ref: "#/components/schemas/MatchIdValue" }
+            seat: { $ref: "#/components/schemas/SeatIndex" }
+        - type: object
+          title: Nobody
+          required: [type]
+          properties:
+            type: { type: string, const: idle }
+    MatchRequest:
+      type: object
+      required: [seats]
+      properties:
+        kind:
+          type: string
+          description: |
+            * `sandbox`: anything goes (lockstep, speed, forks, chosen seeds, network conditioning). Private to its creator.
+            * `exhibition`: realtime at speed 1, spectators allowed, seats may be claimed by invite. For people playing people.
+          enum: [sandbox, exhibition]
+          default: sandbox
+        seed: { type: integer, minimum: 0, description: Sandbox only. Omit for a random seed. }
+        clock: { $ref: "#/components/schemas/ClockConfig" }
+        seats:
+          type: array
+          minItems: 2
+          maxItems: 4
+          items:
+            type: object
+            required: [bot, controller]
+            properties:
+              bot: { $ref: "#/components/schemas/BotSource" }
+              controller: { $ref: "#/components/schemas/SeatController" }
+              net: { $ref: "#/components/schemas/NetConfig" }
+              observation: { $ref: "#/components/schemas/ObservationConfig" }
+        public: { type: boolean, default: false, description: Exhibitions only. Listed under `scope=public` and open to spectators. }
+    Match:
+      type: object
+      required: [id, kind, phase, tick, seed, clock, seats, createdAt, engineVersion, bettable, result]
+      properties:
+        id: { $ref: "#/components/schemas/MatchIdValue" }
+        kind: { type: string, enum: [sandbox, exhibition, season] }
+        phase: { $ref: "#/components/schemas/MatchPhase" }
+        tick: { $ref: "#/components/schemas/Tick" }
+        seed:
+          description: Hidden (null) until the match ends, except in sandbox matches.
+          oneOf: [{ type: integer }, { type: "null" }]
+        clock: { $ref: "#/components/schemas/ClockConfig" }
+        seats:
+          type: array
+          items:
+            type: object
+            required: [seat, botId, kind, controller, holder, connected, ready]
+            properties:
+              seat: { $ref: "#/components/schemas/SeatIndex" }
+              botId: { $ref: "#/components/schemas/BotId" }
+              kind: { $ref: "#/components/schemas/BotKind" }
+              controller: { $ref: "#/components/schemas/SeatController" }
+              net: { $ref: "#/components/schemas/NetConfig" }
+              holder:
+                description: The user who holds a remote seat.
+                oneOf: [{ $ref: "#/components/schemas/Handle" }, { type: "null" }]
+              invite:
+                type: string
+                description: The invite code, shown only to the match's creator.
+              connected: { type: boolean }
+              ready: { type: boolean }
+        createdAt: { $ref: "#/components/schemas/Millis" }
+        createdBy:
+          oneOf: [{ $ref: "#/components/schemas/Handle" }, { type: "null" }]
+        forkOf:
+          oneOf: [{ $ref: "#/components/schemas/MatchIdValue" }, { type: "null" }]
+        engineVersion: { $ref: "#/components/schemas/EngineVersion" }
+        bettable: { type: boolean, description: True only for season fixtures, which are run entirely by built-in brains. }
+        result:
+          oneOf: [{ $ref: "#/components/schemas/MatchResult" }, { type: "null" }]
+    MatchResult:
+      type: object
+      required: [winner, reason, duration, rows, kills, resultHash]
+      properties:
+        winner:
+          oneOf: [{ $ref: "#/components/schemas/BotId" }, { type: "null" }]
+        reason: { type: string, enum: [last_standing, judges, draw], description: "`judges` when the 180 s clock runs out: the highest health fraction wins, damage dealt breaking ties." }
+        duration: { type: number, description: Fight length in seconds. }
+        rows:
+          type: array
+          items: { $ref: "#/components/schemas/PlaceRow" }
+        kills:
+          type: array
+          items: { $ref: "#/components/schemas/Kill" }
+        resultHash: { $ref: "#/components/schemas/Sha256", description: A hash of the final world state. Two runs of the same replay on the same engine must agree. }
+
+    ControlFrame:
+      type: object
+      description: |
+        Motor and weapon commands. Every channel is optional: a channel that is present overrides the
+        controller for that channel, a channel that is absent is left alone.
+
+        With `forTick`, the frame is scheduled for that tick (at most `maxLeadTicks` ahead), which lets a
+        client trade a fixed input delay for immunity to jitter. Without it the frame applies on arrival.
+      properties:
+        throttle: { type: number, minimum: -1, maximum: 1, description: Forward (+) or reverse (-), as a fraction of top speed. }
+        steer: { type: number, minimum: -1, maximum: 1, description: Turn rate as a fraction of maximum. Positive turns left (anticlockwise from above). }
+        trigger: { type: boolean, description: "Fire the weapon: strike, grab, flip, flame or boost. Saws and bar spinners spin on their own and ignore it." }
+        release: { type: boolean, description: Grabber only. Let go of a held bot. }
+        seq: { type: integer, minimum: 0, description: The client's own counter, echoed in `you.lastSeq`. Frames with a `seq` at or below the last applied are dropped. }
+        basedOnTick: { $ref: "#/components/schemas/Tick", description: The tick of the observation this input was computed from. Optional; it is what makes the timing report's staleness figures possible. }
+        forTick: { $ref: "#/components/schemas/Tick" }
+    IntentInput:
+      type: object
+      required: [maneuver]
+      properties:
+        maneuver: { $ref: "#/components/schemas/Maneuver" }
+        target:
+          description: Opponent to focus on. Null or absent lets the build's targeting policy choose.
+          oneOf: [{ $ref: "#/components/schemas/BotId" }, { type: "null" }]
+        danger: { type: number, minimum: 0, maximum: 1, default: 0, description: How likely the bot is about to be hit. The controller weaves and keeps distance as this rises. }
+        note: { type: string, maxLength: 120, description: A line for the ticker and the event log. }
+        seq: { type: integer, minimum: 0 }
+        basedOnTick: { $ref: "#/components/schemas/Tick" }
+    Vec:
+      type: object
+      description: Metres. The arena is a 20 m square centred on the origin; +x is east, +y is north.
+      required: [x, y]
+      properties:
+        x: { type: number }
+        y: { type: number }
+    BotState:
+      type: object
+      required: [id, seat, kind, x, y, heading, vx, vy, hp, hpFrac, alive, eliminated, airborne, z, stun, burn, heldBy, holding, weapon]
+      properties:
+        id: { $ref: "#/components/schemas/BotId" }
+        seat: { $ref: "#/components/schemas/SeatIndex" }
+        kind: { $ref: "#/components/schemas/BotKind" }
+        x: { type: number }
+        y: { type: number }
+        heading: { type: number, description: Radians. 0 faces east, positive is anticlockwise. }
+        vx: { type: number, description: Velocity in m/s, driving and knockback combined. }
+        vy: { type: number }
+        z: { type: number, description: Height off the floor in metres. }
+        airborne: { type: boolean }
+        hp: { type: number }
+        hpFrac: { type: number, minimum: 0, maximum: 1 }
+        alive: { type: boolean }
+        eliminated:
+          oneOf: [{ type: string, enum: [destroyed, pitted] }, { type: "null" }]
+        stun: { type: number, description: Seconds of stun left. A stunned bot ignores its controls. }
+        burn: { type: number, description: Seconds left on fire. }
+        heldBy:
+          oneOf: [{ $ref: "#/components/schemas/BotId" }, { type: "null" }]
+        holding:
+          oneOf: [{ $ref: "#/components/schemas/BotId" }, { type: "null" }]
+        weapon:
+          type: object
+          required: [ready, charge]
+          properties:
+            ready: { type: boolean }
+            charge: { type: number, minimum: 0, maximum: 1, description: "Saw and spinner: blade speed. Torch: fuel. Ram: boost reserve. Others: recharge progress." }
+            cooldown: { type: number, description: Seconds until a one-shot weapon can fire again. }
+            phase: { type: string, enum: [idle, windup, strike, recover], description: Hammer only. }
+            firing: { type: boolean, description: "Torch: flame is out. Ram: boost is burning." }
+    ArenaState:
+      type: object
+      description: Hazard phases at this tick. All are functions of fight time and can be predicted from `/rules`.
+      required: [pit, saws, vents, pad, shock]
+      properties:
+        pit: { type: string, enum: [closed, warning, open] }
+        saws: { type: string, enum: [down, rising, up] }
+        vents:
+          type: array
+          description: The five flame vents, west to east.
+          items: { type: string, enum: [idle, warning, erupting] }
+        pad: { type: string, enum: [idle, charging] }
+        shock:
+          type: array
+          description: The two shock plates, west then east.
+          items: { type: string, enum: [idle, charging, live] }
+    WorldState:
+      type: object
+      description: One snapshot of the whole match. The simulation hides nothing, so every seat and every spectator sees the same world.
+      required: [tick, phase, fightTime, timeLeft, bots, arena]
+      properties:
+        tick: { $ref: "#/components/schemas/Tick" }
+        phase: { $ref: "#/components/schemas/MatchPhase" }
+        fightTime: { type: number, description: Seconds since the bell. Hazards key off this. }
+        timeLeft: { type: number, description: Seconds until the judges decide. }
+        bots:
+          type: array
+          items: { $ref: "#/components/schemas/BotState" }
+        arena: { $ref: "#/components/schemas/ArenaState" }
+        you: { $ref: "#/components/schemas/SeatStatus" }
+    SeatStatus:
+      type: object
+      description: Present when the state is read as a seat. How the server currently sees this seat's control.
+      required: [seat, lastSeq, appliedTick, driver, controls]
+      properties:
+        seat: { $ref: "#/components/schemas/SeatIndex" }
+        lastSeq:
+          description: The `seq` of the newest input that has reached the simulation.
+          oneOf: [{ type: integer }, { type: "null" }]
+        appliedTick:
+          description: The tick at which it took effect.
+          oneOf: [{ $ref: "#/components/schemas/Tick" }, { type: "null" }]
+        driver:
+          type: string
+          description: "Who is moving the bot this tick: the remote `controller`, a channel on `hold` (last value, no fresh input), or the `fallback` brain."
+          enum: [controller, hold, fallback]
+        controls:
+          type: object
+          description: The values applied this tick, whoever produced them.
+          required: [throttle, steer, trigger, release]
+          properties:
+            throttle: { type: number }
+            steer: { type: number }
+            trigger: { type: boolean }
+            release: { type: boolean }
+        intent:
+          oneOf: [{ $ref: "#/components/schemas/IntentInput" }, { type: "null" }]
+        nextDecisionTick:
+          description: When this bot's next decision point falls (intent and hybrid seats).
+          oneOf: [{ $ref: "#/components/schemas/Tick" }, { type: "null" }]
+    Sense:
+      type: object
+      description: One bot's decision-level view of one moment, in two encodings of the same facts.
+      required: [tick, seat, reason, available, perception, facts]
+      properties:
+        tick: { $ref: "#/components/schemas/Tick" }
+        seat: { $ref: "#/components/schemas/SeatIndex" }
+        reason: { type: string, enum: [cadence, urgent, requested], description: "`urgent` after a big hit, a grab, a release, a flip, the target's elimination or the pit opening." }
+        deadlineTick:
+          description: The decision point this sense is for. An intent that reaches the simulation after it waits for the next one.
+          oneOf: [{ $ref: "#/components/schemas/Tick" }, { type: "null" }]
+        available:
+          type: array
+          description: Maneuvers that are installed and make sense right now.
+          items: { $ref: "#/components/schemas/Maneuver" }
+        perception: { $ref: "#/components/schemas/Perception" }
+        facts: { $ref: "#/components/schemas/Facts" }
+    Perception:
+      type: object
+      description: The moment in words and buckets. No raw numbers, because language models read "close, ahead-left, critical" far better than coordinates.
+      required: [me, opponents, arena]
+      properties:
+        me:
+          type: object
+          required: [name, weapon, health, weapon_state, position, status, nearest_hazard]
+          properties:
+            name: { type: string }
+            weapon: { type: string, examples: ["hydraulic grabbing arm"] }
+            health: { type: string, enum: [healthy, scratched, damaged, critical] }
+            weapon_state: { type: string }
+            position: { type: string, enum: ["center of the arena", "near the north wall", "near the south wall", "near the east wall", "near the west wall", "in a corner"] }
+            status: { type: string, examples: ["driving normally", "airborne", "stunned"] }
+            nearest_hazard: { type: string }
+          additionalProperties: { type: string }
+        opponents:
+          type: array
+          items:
+            type: object
+            required: [name, weapon, health, distance, bearing, facing_me, status, weapon_state]
+            properties:
+              name: { type: string }
+              weapon: { type: string }
+              health: { type: string, enum: [healthy, scratched, damaged, critical] }
+              distance: { type: string, enum: [touching, close, medium, far] }
+              bearing: { type: string, enum: ["dead ahead", "ahead-left", "ahead-right", left, right, "behind-left", "behind-right", "directly behind"] }
+              facing_me: { type: string, enum: ["yes, pointed straight at me", partly, "no, turned away"] }
+              status: { type: string }
+              weapon_state: { type: string }
+        arena:
+          type: object
+          required: [pit, kill_saws, flame_vents, launch_pad, shock_plates, time_left]
+          properties:
+            pit: { type: string }
+            kill_saws: { type: string }
+            flame_vents: { type: string }
+            launch_pad: { type: string }
+            shock_plates: { type: string }
+            time_left: { type: string, enum: ["plenty of time", "about half the match left", "final 30 seconds"] }
+    Facts:
+      type: object
+      description: The same moment as numbers, for code. Distances in metres, fractions 0 to 1.
+      required: [hpFrac, weaponReady, weaponCharge, holding, heldBy, airborne, stunned, burning, pitOpen, pitDist, sawsUp, sawsSoon, sawsDist, trapLive, trapDist, timeLeft, opponents]
+      properties:
+        hpFrac: { type: number }
+        weaponReady: { type: boolean }
+        weaponCharge: { type: number }
+        holding:
+          oneOf: [{ type: string }, { type: "null" }]
+        heldBy:
+          oneOf: [{ type: string }, { type: "null" }]
+        airborne: { type: boolean }
+        stunned: { type: boolean }
+        burning: { type: boolean }
+        pitOpen: { type: boolean }
+        pitDist: { type: number }
+        sawsUp: { type: boolean }
+        sawsSoon: { type: boolean }
+        sawsDist: { type: number }
+        trapLive: { type: boolean, description: A flame vent, the launch pad or a shock plate is telegraphing or firing. }
+        trapDist: { type: number, description: Distance to the nearest such trap. 99 when none is live. }
+        timeLeft: { type: number, description: Seconds. }
+        opponents:
+          type: array
+          items:
+            type: object
+            required: [name, kind, hpFrac, dist, relBearing, facingMe, weaponReady, airborne, stunned, heldBy, burning, inReach, threatening, trapDist]
+            properties:
+              name: { type: string }
+              kind: { $ref: "#/components/schemas/BotKind" }
+              hpFrac: { type: number }
+              dist: { type: number }
+              relBearing: { type: number, description: "Radians from my heading to them, -pi to pi. 0 is dead ahead, positive is to my left." }
+              facingMe: { type: number, description: "Cosine of the angle between their heading and the line to me. 1 is pointed straight at me." }
+              weaponReady: { type: boolean }
+              airborne: { type: boolean }
+              stunned: { type: boolean }
+              heldBy:
+                oneOf: [{ type: string }, { type: "null" }]
+              burning: { type: boolean }
+              inReach: { type: boolean, description: Inside my weapon's reach right now. }
+              threatening: { type: boolean, description: "Their weapon is ready, pointed at me, and they are close." }
+              trapDist: { type: number }
+    TickedEvent:
+      type: object
+      description: Something that happened in a tick. The `type` decides which other fields are present.
+      required: [tick, type]
+      properties:
+        tick: { $ref: "#/components/schemas/Tick" }
+        type:
+          type: string
+          description: |
+            * Combat: `hit` (attacker, victim, amount, weapon, crit, at), `strike` (bot, landed), `grab`, `release` (reason), `flip`, `slam` (speed), `boost`, `wall` (speed).
+            * Eliminations: `destroyed`, `pitted` (bot, by).
+            * Hazards: `pit_warning`, `pit_open`, `saws_rising`, `saws_up`, `vents_warning`, `vent_erupt`, `pad_warning`, `pad_fire`, `shock_warning`, `shock_fire`, `trapped` (trap, bot, by).
+            * Match: `match_start`, `match_end` (winner, reason), `decision` (bot, note, source).
+            * Seats: `seat_hold`, `seat_fallback`, `seat_resumed`, `input_rejected` (seat, reason).
+          enum: [hit, strike, grab, release, flip, wall, slam, boost, destroyed, pitted, pit_open, pit_warning, saws_rising, saws_up, vents_warning, vent_erupt, pad_warning, pad_fire, shock_warning, shock_fire, trapped, match_start, match_end, decision, seat_hold, seat_fallback, seat_resumed, input_rejected]
+        bot: { type: string }
+        attacker: { type: string }
+        victim:
+          oneOf: [{ type: string }, { type: "null" }]
+        by:
+          oneOf: [{ type: string }, { type: "null" }]
+        amount: { type: number, description: Damage. }
+        weapon: { type: string, enum: [saw, hammer, crush, flip, landing, wall, saws, spinner, torch, ram, vent, shock] }
+        crit: { type: boolean }
+        at: { $ref: "#/components/schemas/Vec" }
+        seat: { $ref: "#/components/schemas/SeatIndex" }
+        reason: { type: string }
+        note: { type: string }
+        source: { type: string, enum: [jev, baseline, fallback, trained, remote] }
+      additionalProperties: true
+    Replay:
+      type: object
+      required: [matchId, engineVersion, rulesVersion, seed, seats, inputs, ticks, resultHash]
+      properties:
+        matchId: { $ref: "#/components/schemas/MatchIdValue" }
+        engineVersion: { $ref: "#/components/schemas/EngineVersion" }
+        rulesVersion: { type: string }
+        seed: { type: integer }
+        seats:
+          type: array
+          items:
+            type: object
+            required: [seat, build, controller]
+            properties:
+              seat: { $ref: "#/components/schemas/SeatIndex" }
+              build: { $ref: "#/components/schemas/BotBuild" }
+              controller: { $ref: "#/components/schemas/SeatController" }
+        inputs:
+          type: array
+          description: Every input that reached the simulation, in the order it took effect. Built-in seats have none; they replay from the seed.
+          items:
+            type: object
+            required: [tick, seat]
+            properties:
+              tick: { $ref: "#/components/schemas/Tick", description: The tick the input took effect, after conditioning. }
+              seat: { $ref: "#/components/schemas/SeatIndex" }
+              control: { $ref: "#/components/schemas/ControlFrame" }
+              intent: { $ref: "#/components/schemas/IntentInput" }
+        ticks: { type: integer, description: Total ticks simulated. }
+        resultHash: { $ref: "#/components/schemas/Sha256" }
+    SeatTiming:
+      type: object
+      required: [seat, inputs, late, dropped, holdTicks, fallbackTicks, rttMs, stalenessTicks, inputDelayTicks]
+      properties:
+        seat: { $ref: "#/components/schemas/SeatIndex" }
+        net: { $ref: "#/components/schemas/NetConfig" }
+        inputs: { type: integer, description: Inputs that reached the simulation. }
+        late: { type: integer, description: "Inputs whose `forTick` had passed on arrival." }
+        dropped: { type: integer, description: "Inputs discarded: stale `seq`, over the rate limit, or lost to `lossPct`." }
+        rejected: { type: integer, description: Inputs refused as illegal. }
+        holdTicks: { type: integer, description: Ticks a channel ran on its last value with no fresh input. }
+        fallbackTicks: { type: integer, description: Ticks the fallback brain drove. }
+        rttMs: { $ref: "#/components/schemas/Distribution", description: Round trip measured by ping. Realtime only. }
+        stalenessTicks: { $ref: "#/components/schemas/Distribution", description: "For each input, the tick it took effect minus its `basedOnTick`: the full loop from world to hands and back." }
+        inputDelayTicks: { $ref: "#/components/schemas/Distribution", description: From an input's arrival at the server to its taking effect. }
+    Distribution:
+      type: object
+      required: [n, mean, p50, p95, max]
+      properties:
+        n: { type: integer }
+        mean: { type: number }
+        p50: { type: number }
+        p95: { type: number }
+        max: { type: number }
+
+    # ---- rules --------------------------------------------------------------------------------------
+    Rules:
+      type: object
+      required: [ok, rulesVersion, engineVersion, tickRate, design, arena, season, prizes, betting, drive]
+      properties:
+        ok: { type: boolean, const: true }
+        rulesVersion: { type: string }
+        engineVersion: { $ref: "#/components/schemas/EngineVersion" }
+        tickRate: { type: integer, const: 60 }
+        design:
+          type: object
+          required: [budget, maxLevel, levelCost, parts, weapons, techniques, subjects, targetSelectors, styleKeys]
+          properties:
+            budget: { type: integer, examples: [60] }
+            maxLevel: { type: integer, examples: [5] }
+            levelCost:
+              type: array
+              items: { type: integer }
+              examples: [[0, 1, 3, 6, 10, 15]]
+            parts:
+              type: array
+              items:
+                type: object
+                required: [key, label, group, blurb]
+                properties:
+                  key: { $ref: "#/components/schemas/PartKey" }
+                  label: { type: string }
+                  group: { type: string, enum: [chassis, weapon, systems] }
+                  blurb: { type: string }
+            weapons:
+              type: array
+              items:
+                type: object
+                required: [kind, label, weapon, blurb, mass, radius, footprint]
+                properties:
+                  kind: { $ref: "#/components/schemas/BotKind" }
+                  label: { type: string }
+                  weapon: { type: string }
+                  blurb: { type: string }
+                  mass: { type: number }
+                  radius: { type: number }
+                  footprint:
+                    type: object
+                    additionalProperties: { type: number }
+            techniques:
+              type: array
+              items:
+                type: object
+                required: [m, label, cost, blurb]
+                properties:
+                  m: { $ref: "#/components/schemas/Maneuver" }
+                  label: { type: string }
+                  cost: { type: integer }
+                  kinds:
+                    type: array
+                    description: Installable only with these weapon systems. Absent means any.
+                    items: { $ref: "#/components/schemas/BotKind" }
+                  required: { type: boolean }
+                  blurb: { type: string }
+            subjects:
+              type: array
+              description: The condition language's subjects.
+              items:
+                type: object
+                required: [key, label, type, group]
+                properties:
+                  key: { type: string }
+                  label: { type: string }
+                  type: { type: string, enum: [frac, meters, facing, bool, kind, count, seconds] }
+                  group: { type: string, enum: [me, target, threat, field, arena] }
+            targetSelectors:
+              type: array
+              items: { type: string }
+            styleKeys:
+              type: array
+              items: { type: string }
+        arena:
+          type: object
+          description: Geometry and hazard timing, exactly as the simulation uses them (ARENA in src/sim/arena.ts).
+          required: [half, matchSeconds, countdownSeconds, starts, pit, saws, vents, pad, shock]
+          properties:
+            half: { type: number, examples: [10] }
+            matchSeconds: { type: number, examples: [180] }
+            countdownSeconds: { type: number, examples: [3] }
+            starts:
+              type: array
+              items: { $ref: "#/components/schemas/Vec" }
+            pit: { type: object, additionalProperties: true }
+            saws: { type: object, additionalProperties: true }
+            vents: { type: object, additionalProperties: true }
+            pad: { type: object, additionalProperties: true }
+            shock: { type: object, additionalProperties: true }
+        season:
+          type: object
+          required: [leagueSize, leagueWeeks, matches, directFinalists, lastChanceCut, points]
+          properties:
+            leagueSize: { type: integer, examples: [8] }
+            leagueWeeks: { type: integer, examples: [4] }
+            matches: { type: integer, examples: [10] }
+            directFinalists: { type: integer, examples: [2] }
+            lastChanceCut: { type: integer, examples: [6] }
+            points:
+              type: object
+              properties:
+                place:
+                  type: array
+                  items: { type: integer }
+                  examples: [[5, 3, 1, 0]]
+                elimination: { type: integer, examples: [1] }
+                topDamage: { type: integer, examples: [1] }
+        prizes:
+          type: object
+          description: Designer prize money per match, in credits.
+          properties:
+            league:
+              type: array
+              items: { type: integer }
+              examples: [[40, 20, 10, 0]]
+            elimination: { type: integer, examples: [5] }
+            lastChance:
+              type: array
+              items: { type: integer }
+              examples: [[60, 60, 0, 0]]
+            final:
+              type: array
+              items: { type: integer }
+              examples: [[300, 120, 60, 30]]
+        betting:
+          type: object
+          required: [startGrant, seasonStipend, minPrice, limits]
+          properties:
+            startGrant: { type: integer, examples: [1000] }
+            seasonStipend: { type: integer, examples: [100], description: A bettor with nothing left and nothing riding is topped up to this at season start. }
+            minPrice: { $ref: "#/components/schemas/CentiOdds" }
+            limits:
+              type: object
+              description: Keyed by market scope.
+              additionalProperties:
+                type: object
+                required: [minStake, maxStake, userMarketCap, selectionCap]
+                properties:
+                  minStake: { type: integer }
+                  maxStake: { type: integer }
+                  userMarketCap: { type: integer, description: The most one user may stake on one market in total. }
+                  selectionCap: { type: integer, description: The most the house may stand to lose on one selection. }
+        drive:
+          type: object
+          description: Limits on driven matches.
+          properties:
+            maxConcurrentMatches: { type: integer, examples: [4] }
+            maxInputsPerSecond: { type: integer, examples: [120] }
+            lobbyTimeoutSeconds: { type: integer, examples: [120] }
+            lockstepIdleSeconds: { type: integer, examples: [600] }
+            lockstepTicksPerSecond: { type: integer, examples: [20000], description: Per-user budget of simulated ticks per wall-clock second across lockstep matches. }
+            maxForksPerMatch: { type: integer, examples: [64] }

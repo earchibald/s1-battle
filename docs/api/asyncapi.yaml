@@ -1,0 +1,776 @@
+asyncapi: 3.0.0
+info:
+  title: S1 Arena Realtime API
+  version: 1.0.0-draft.1
+  description: |
+    The WebSocket half of the S1 Arena API: driving a seat, watching a match, and the live feed of season,
+    market and account events. The HTTP half is `openapi.yaml`, and the schemas of world state, senses,
+    control frames and intents are defined there and referenced from here.
+
+    All three sockets are `proposed`: none is built yet.
+
+    Frames are JSON text, one message per frame, each with a `type`. The seat socket also accepts a 5-byte
+    binary control frame (see `ControlBinary`). Operations below are written from the server's point of view,
+    as AsyncAPI requires: the server `receive`s what a client sends, and `send`s what a client gets.
+
+    Authentication: send `Authorization: Bearer <credential>` on the upgrade request, or pass a one-time
+    `?ticket=` from `POST /ws-tickets` (the only option in a browser).
+
+    Close codes: 1000 match over or normal close · 4400 malformed message · 4401 no valid credential ·
+    4403 not your seat or missing scope · 4404 no such match or seat · 4408 lobby or idle timeout ·
+    4409 replaced by a newer connection for the same seat · 4429 input rate limit.
+servers:
+  local:
+    host: localhost:8787
+    pathname: /api/v1
+    protocol: ws
+    description: Local house server.
+  deployed:
+    host: "{host}"
+    pathname: /api/v1
+    protocol: wss
+    description: Deployed house server.
+    variables:
+      host:
+        default: arena.example
+
+channels:
+  seat:
+    address: /matches/{matchId}/seats/{seat}
+    title: Seat control
+    description: |
+      One connection drives one seat. Opening it needs the `drive` scope and the seat must be the caller's
+      (created with `claim: owner`, or claimed).
+
+      Sequence: the server sends `welcome`; the client sends `ready`; when every remote seat is ready the
+      server sends `phase: countdown`, then streams `state` (and `sense`, `events`) until `result`.
+
+      A seat may reconnect at any time while the match lives. The newer connection wins and the older one is
+      closed with 4409. While a seat is disconnected its channels hold, lapse, and after `takeoverMs` the
+      fallback brain drives; in a lockstep match the step simply waits (up to `stepTimeoutMs`).
+    parameters:
+      matchId:
+        description: The match id, for example `m-9c41d07be2a1`.
+      seat:
+        description: Seat index, 0 to 3.
+    messages:
+      ready: { $ref: "#/components/messages/Ready" }
+      control: { $ref: "#/components/messages/Control" }
+      controlBinary: { $ref: "#/components/messages/ControlBinary" }
+      intent: { $ref: "#/components/messages/Intent" }
+      commit: { $ref: "#/components/messages/Commit" }
+      ping: { $ref: "#/components/messages/Ping" }
+      welcome: { $ref: "#/components/messages/Welcome" }
+      phase: { $ref: "#/components/messages/Phase" }
+      state: { $ref: "#/components/messages/State" }
+      sense: { $ref: "#/components/messages/SenseMessage" }
+      events: { $ref: "#/components/messages/Events" }
+      rejected: { $ref: "#/components/messages/Rejected" }
+      pong: { $ref: "#/components/messages/Pong" }
+      result: { $ref: "#/components/messages/Result" }
+      error: { $ref: "#/components/messages/ErrorMessage" }
+
+  watch:
+    address: /matches/{matchId}/watch
+    title: Spectate a match
+    description: >-
+      Read-only. Public exhibitions and season fixtures need no credential; a sandbox match can be watched
+      only by its creator. Sends the same `state` and `events` a seat gets, without `you` and without any
+      network conditioning. Query `?rateHz=10|20|30|60` chooses the snapshot rate (default 30).
+    parameters:
+      matchId:
+        description: The match id.
+    messages:
+      ping: { $ref: "#/components/messages/Ping" }
+      welcome: { $ref: "#/components/messages/Welcome" }
+      phase: { $ref: "#/components/messages/Phase" }
+      state: { $ref: "#/components/messages/State" }
+      events: { $ref: "#/components/messages/Events" }
+      pong: { $ref: "#/components/messages/Pong" }
+      result: { $ref: "#/components/messages/Result" }
+      error: { $ref: "#/components/messages/ErrorMessage" }
+
+  feed:
+    address: /feed
+    title: Live feed
+    description: |
+      Season, market and account events as they happen, so a client need not poll `/seasons/current`.
+
+      Topics: `season` (fixtures locking and finishing, pricing progress, the match clock), `markets`
+      (markets opening, repricing, changing status, settling), `matches` (public exhibitions starting and
+      ending) and `account` (the caller's bets and wallet; needs a credential with the `account` scope).
+
+      Every event carries a `seq` that rises by one per connection topic. To resume after a drop, subscribe
+      again with `since` set to the last `seq` seen. The server keeps a short buffer; if the gap is too old it
+      answers `resync` and the client should re-read state over HTTP.
+    messages:
+      subscribe: { $ref: "#/components/messages/Subscribe" }
+      unsubscribe: { $ref: "#/components/messages/Unsubscribe" }
+      ping: { $ref: "#/components/messages/Ping" }
+      subscribed: { $ref: "#/components/messages/Subscribed" }
+      resync: { $ref: "#/components/messages/Resync" }
+      seasonStarted: { $ref: "#/components/messages/SeasonStarted" }
+      seasonPricing: { $ref: "#/components/messages/SeasonPricing" }
+      seasonClock: { $ref: "#/components/messages/SeasonClockChanged" }
+      fixtureLocked: { $ref: "#/components/messages/FixtureLocked" }
+      fixturePlayed: { $ref: "#/components/messages/FixturePlayed" }
+      seasonCompleted: { $ref: "#/components/messages/SeasonCompleted" }
+      marketOpened: { $ref: "#/components/messages/MarketOpened" }
+      marketPrice: { $ref: "#/components/messages/MarketPrice" }
+      marketStatus: { $ref: "#/components/messages/MarketStatusChanged" }
+      marketSettled: { $ref: "#/components/messages/MarketSettled" }
+      matchListed: { $ref: "#/components/messages/MatchListed" }
+      betPlaced: { $ref: "#/components/messages/BetPlaced" }
+      betSettled: { $ref: "#/components/messages/BetSettled" }
+      walletChanged: { $ref: "#/components/messages/WalletChanged" }
+      pong: { $ref: "#/components/messages/Pong" }
+      error: { $ref: "#/components/messages/ErrorMessage" }
+
+operations:
+  seatInput:
+    action: receive
+    channel: { $ref: "#/channels/seat" }
+    title: Drive the seat
+    summary: Inputs a controller sends.
+    messages:
+      - $ref: "#/channels/seat/messages/ready"
+      - $ref: "#/channels/seat/messages/control"
+      - $ref: "#/channels/seat/messages/controlBinary"
+      - $ref: "#/channels/seat/messages/intent"
+      - $ref: "#/channels/seat/messages/commit"
+      - $ref: "#/channels/seat/messages/ping"
+  seatOutput:
+    action: send
+    channel: { $ref: "#/channels/seat" }
+    title: Observe from the seat
+    summary: What a controller gets back.
+    messages:
+      - $ref: "#/channels/seat/messages/welcome"
+      - $ref: "#/channels/seat/messages/phase"
+      - $ref: "#/channels/seat/messages/state"
+      - $ref: "#/channels/seat/messages/sense"
+      - $ref: "#/channels/seat/messages/events"
+      - $ref: "#/channels/seat/messages/rejected"
+      - $ref: "#/channels/seat/messages/pong"
+      - $ref: "#/channels/seat/messages/result"
+      - $ref: "#/channels/seat/messages/error"
+  watchInput:
+    action: receive
+    channel: { $ref: "#/channels/watch" }
+    title: Keep the watch socket alive
+    messages:
+      - $ref: "#/channels/watch/messages/ping"
+  watchOutput:
+    action: send
+    channel: { $ref: "#/channels/watch" }
+    title: Watch a match
+    messages:
+      - $ref: "#/channels/watch/messages/welcome"
+      - $ref: "#/channels/watch/messages/phase"
+      - $ref: "#/channels/watch/messages/state"
+      - $ref: "#/channels/watch/messages/events"
+      - $ref: "#/channels/watch/messages/pong"
+      - $ref: "#/channels/watch/messages/result"
+      - $ref: "#/channels/watch/messages/error"
+  feedInput:
+    action: receive
+    channel: { $ref: "#/channels/feed" }
+    title: Choose topics
+    messages:
+      - $ref: "#/channels/feed/messages/subscribe"
+      - $ref: "#/channels/feed/messages/unsubscribe"
+      - $ref: "#/channels/feed/messages/ping"
+  feedOutput:
+    action: send
+    channel: { $ref: "#/channels/feed" }
+    title: Follow the house
+    messages:
+      - $ref: "#/channels/feed/messages/subscribed"
+      - $ref: "#/channels/feed/messages/resync"
+      - $ref: "#/channels/feed/messages/seasonStarted"
+      - $ref: "#/channels/feed/messages/seasonPricing"
+      - $ref: "#/channels/feed/messages/seasonClock"
+      - $ref: "#/channels/feed/messages/fixtureLocked"
+      - $ref: "#/channels/feed/messages/fixturePlayed"
+      - $ref: "#/channels/feed/messages/seasonCompleted"
+      - $ref: "#/channels/feed/messages/marketOpened"
+      - $ref: "#/channels/feed/messages/marketPrice"
+      - $ref: "#/channels/feed/messages/marketStatus"
+      - $ref: "#/channels/feed/messages/marketSettled"
+      - $ref: "#/channels/feed/messages/matchListed"
+      - $ref: "#/channels/feed/messages/betPlaced"
+      - $ref: "#/channels/feed/messages/betSettled"
+      - $ref: "#/channels/feed/messages/walletChanged"
+      - $ref: "#/channels/feed/messages/pong"
+      - $ref: "#/channels/feed/messages/error"
+
+components:
+  messages:
+    # ---- client to server ---------------------------------------------------------------------------
+    Ready:
+      name: ready
+      title: Ready
+      summary: The controller is connected and wants the match to start.
+      payload:
+        type: object
+        required: [type]
+        properties:
+          type: { type: string, const: ready }
+      examples:
+        - payload: { type: ready }
+    Control:
+      name: control
+      title: Control frame
+      summary: Throttle, steering and triggers. Any channel present overrides the server's controller for that channel.
+      description: |
+        Accepted on `direct` and `hybrid` seats. Send on change, or at a steady 20 to 60 per second. With no
+        fresh input a channel holds its last value for `holdTicks` (default 15 ticks, a quarter of a second),
+        then lapses: back to the server's controller on a `hybrid` seat, to neutral (throttle 0, steer 0,
+        trigger off) on a `direct` seat. After `takeoverMs` of silence the fallback brain takes the seat.
+
+        `forTick` schedules the frame for a future tick, at most `maxLeadTicks` ahead. A client that stamps
+        every frame `forTick = latest tick seen + N` gets a constant N-tick input delay and stops feeling
+        jitter smaller than N ticks. A `forTick` already past is applied at once and counted late.
+
+        Limit: 120 input messages per second per seat. Above it frames are dropped, then the socket is closed
+        with 4429.
+      payload:
+        allOf:
+          - type: object
+            required: [type]
+            properties:
+              type: { type: string, const: control }
+          - $ref: "./openapi.yaml#/components/schemas/ControlFrame"
+      examples:
+        - name: fullFrame
+          summary: Full ahead, turning right, weapon held
+          payload: { type: control, seq: 412, basedOnTick: 1310, throttle: 1, steer: -0.6, trigger: true }
+        - name: hybridOverride
+          summary: Hybrid seat. Override only the trigger and leave driving to the current intent
+          payload: { type: control, seq: 413, trigger: false }
+    ControlBinary:
+      name: controlBinary
+      title: Control frame (binary)
+      summary: The same frame in 5 bytes, for 60 Hz piloting on constrained links.
+      description: |
+        A binary WebSocket frame of exactly 5 bytes. Provisional: the layout may change before it ships.
+
+        ```
+        byte 0   throttle   int8, -127..127 maps to -1..1
+        byte 1   steer      int8, -127..127 maps to -1..1
+        byte 2   flags      bit0 trigger   bit1 release
+                            bit4 throttle present   bit5 steer present
+                            bit6 trigger present    bit7 release present
+        byte 3-4 basedOnTick, low 16 bits, little-endian
+        ```
+
+        A WebSocket delivers frames in order, so binary frames carry no `seq`: the server numbers them in
+        arrival order and reports that number as `you.lastSeq`. There is no binary `forTick`; use JSON frames
+        when scheduling inputs ahead.
+      contentType: application/octet-stream
+      payload:
+        type: string
+        format: binary
+        minLength: 5
+        maxLength: 5
+    Intent:
+      name: intent
+      title: Intent
+      summary: The maneuver the bot should run and who it should run it on.
+      description: |
+        Accepted on `intent` and `hybrid` seats. The newest intent to reach the simulation before a decision
+        point takes effect at that decision point and stays in force until replaced. Decision points fall
+        every `cadence` seconds of fight time for this bot (0.25 to 0.45 s by sensors level) and within
+        about 80 ms of an urgent event; the server announces each with a `sense` carrying its `deadlineTick`.
+
+        A maneuver that is not installed on the build, or not in that decision point's `available` list, is
+        refused: the server sends `rejected` and the fallback brain decides that decision point.
+      payload:
+        allOf:
+          - type: object
+            required: [type]
+            properties:
+              type: { type: string, const: intent }
+          - $ref: "./openapi.yaml#/components/schemas/IntentInput"
+      examples:
+        - payload: { type: intent, seq: 18, basedOnTick: 1296, maneuver: drag_to_pit, target: "RIPSAW", danger: 0.2, note: "pit opens in 2 s" }
+    Commit:
+      name: commit
+      title: Commit a step
+      summary: Lockstep only. "I have sent my inputs for this step; advance when everyone has."
+      description: >-
+        The match advances `stepTicks` ticks once every remote seat has committed the current tick. Inputs
+        sent before the commit are applied to this step; a commit with no inputs keeps the previous ones.
+        Committing a tick other than the current one is rejected.
+      payload:
+        type: object
+        required: [type, tick]
+        properties:
+          type: { type: string, const: commit }
+          tick: { $ref: "./openapi.yaml#/components/schemas/Tick" }
+      examples:
+        - payload: { type: commit, tick: 1310 }
+    Ping:
+      name: ping
+      title: Ping
+      summary: Measure round-trip time and clock offset.
+      description: >-
+        The server answers at once with `pong`, bypassing any network conditioning, so a ping measures the
+        real link. Send one every second or two; the timing report's `rttMs` is built from them. A socket that
+        sends nothing for 30 seconds is closed with 4408.
+      payload:
+        type: object
+        required: [type, t]
+        properties:
+          type: { type: string, const: ping }
+          t: { type: number, description: Any client timestamp. Echoed back untouched. }
+      examples:
+        - payload: { type: ping, t: 88213.4 }
+    Subscribe:
+      name: subscribe
+      title: Subscribe
+      summary: Start receiving one or more feed topics.
+      payload:
+        type: object
+        required: [type, topics]
+        properties:
+          type: { type: string, const: subscribe }
+          topics:
+            type: array
+            minItems: 1
+            items: { type: string, enum: [season, markets, matches, account] }
+          since:
+            type: object
+            description: Last `seq` seen per topic, to resume without a gap.
+            additionalProperties: { type: integer }
+      examples:
+        - payload: { type: subscribe, topics: [season, markets], since: { markets: 5120 } }
+    Unsubscribe:
+      name: unsubscribe
+      title: Unsubscribe
+      payload:
+        type: object
+        required: [type, topics]
+        properties:
+          type: { type: string, const: unsubscribe }
+          topics:
+            type: array
+            items: { type: string, enum: [season, markets, matches, account] }
+
+    # ---- server to client: match --------------------------------------------------------------------
+    Welcome:
+      name: welcome
+      title: Welcome
+      summary: First message on a seat or watch socket. Everything fixed for the life of the match.
+      payload:
+        type: object
+        required: [type, match, tickRate, tick, serverTime, engineVersion, rulesVersion]
+        properties:
+          type: { type: string, const: welcome }
+          match: { $ref: "./openapi.yaml#/components/schemas/Match" }
+          seat:
+            description: The seat this socket drives. Absent on a watch socket.
+            $ref: "./openapi.yaml#/components/schemas/SeatIndex"
+          botId: { $ref: "./openapi.yaml#/components/schemas/BotId" }
+          build:
+            description: The seat's normalised build, so the controller knows its techniques and stats.
+            $ref: "./openapi.yaml#/components/schemas/BotBuild"
+          derived: { $ref: "./openapi.yaml#/components/schemas/Derived" }
+          tickRate: { type: integer, const: 60 }
+          tick: { $ref: "./openapi.yaml#/components/schemas/Tick" }
+          serverTime: { $ref: "./openapi.yaml#/components/schemas/Millis" }
+          engineVersion: { $ref: "./openapi.yaml#/components/schemas/EngineVersion" }
+          rulesVersion: { type: string }
+    Phase:
+      name: phase
+      title: Phase change
+      summary: The match moved to a new phase.
+      payload:
+        type: object
+        required: [type, phase, tick]
+        properties:
+          type: { type: string, const: phase }
+          phase: { $ref: "./openapi.yaml#/components/schemas/MatchPhase" }
+          tick: { $ref: "./openapi.yaml#/components/schemas/Tick" }
+          bellTick:
+            description: On `countdown`, the tick at which fighting starts.
+            $ref: "./openapi.yaml#/components/schemas/Tick"
+          waitingFor:
+            type: array
+            description: On `lobby`, the seats not yet ready.
+            items: { $ref: "./openapi.yaml#/components/schemas/SeatIndex" }
+      examples:
+        - payload: { type: phase, phase: countdown, tick: 0, bellTick: 180 }
+    State:
+      name: state
+      title: World state
+      summary: A snapshot of every bot and hazard at one tick.
+      description: |
+        Sent `rateHz` times per second of simulated time (realtime), or once per step (lockstep). On a seat
+        socket it passes through the seat's downlink conditioning and carries `you`: the newest of the seat's
+        inputs to have reached the simulation and the tick it took effect, which is how a client measures its
+        true input latency.
+
+        Snapshots are whole, never deltas, so a lost or skipped one costs nothing but freshness.
+      payload:
+        allOf:
+          - type: object
+            required: [type]
+            properties:
+              type: { type: string, const: state }
+              serverTime: { $ref: "./openapi.yaml#/components/schemas/Millis" }
+          - $ref: "./openapi.yaml#/components/schemas/WorldState"
+      examples:
+        - name: midFight
+          summary: Two bots, 21.8 s into the fight, as seat 0 sees it
+          payload:
+            type: state
+            serverTime: 1794596553820
+            tick: 1490
+            phase: fighting
+            fightTime: 21.83
+            timeLeft: 158.17
+            bots:
+              - { id: "RIPSAW", seat: 0, kind: saw, x: -1.42, y: 0.37, heading: 0.61, vx: 3.9, vy: 2.7, z: 0, airborne: false, hp: 251, hpFrac: 0.84, alive: true, eliminated: null, stun: 0, burn: 0, heldBy: null, holding: null, weapon: { ready: true, charge: 0.93 } }
+              - { id: "PILEDRIVER", seat: 1, kind: hammer, x: 2.05, y: 2.9, heading: -2.4, vx: -0.8, vy: -0.6, z: 0, airborne: false, hp: 318, hpFrac: 0.91, alive: true, eliminated: null, stun: 0, burn: 0, heldBy: null, holding: null, weapon: { ready: false, charge: 0.4, cooldown: 1.9, phase: idle } }
+            arena: { pit: closed, saws: down, vents: [idle, idle, warning, idle, idle], pad: idle, shock: [idle, charging] }
+            you:
+              seat: 0
+              lastSeq: 412
+              appliedTick: 1488
+              driver: controller
+              controls: { throttle: 1, steer: -0.6, trigger: true, release: false }
+              intent: null
+              nextDecisionTick: null
+    SenseMessage:
+      name: sense
+      title: Sense
+      summary: A decision point is coming. Here is what the bot perceives, in words and in numbers.
+      description: >-
+        Sent to `intent` seats (and to others that ask with `observation.sense`) shortly before each of the
+        bot's decision points, with `deadlineTick` set to the decision point. Answer with `intent` in time and
+        it takes effect there; miss it and the previous intent stays in force.
+      payload:
+        allOf:
+          - type: object
+            required: [type]
+            properties:
+              type: { type: string, const: sense }
+          - $ref: "./openapi.yaml#/components/schemas/Sense"
+    Events:
+      name: events
+      title: Events
+      summary: What happened since the last message, in tick order.
+      payload:
+        type: object
+        required: [type, events]
+        properties:
+          type: { type: string, const: events }
+          events:
+            type: array
+            items: { $ref: "./openapi.yaml#/components/schemas/TickedEvent" }
+      examples:
+        - payload:
+            type: events
+            events:
+              - { tick: 1502, type: hit, attacker: "RIPSAW", victim: "PILEDRIVER", amount: 11.4, weapon: saw, crit: false, at: { x: 1.6, y: 2.4 } }
+              - { tick: 1502, type: pad_warning, at: { x: 0, y: 1.8 } }
+    Rejected:
+      name: rejected
+      title: Input rejected
+      summary: An input was refused. Nothing changed.
+      payload:
+        type: object
+        required: [type, code, message]
+        properties:
+          type: { type: string, const: rejected }
+          seq:
+            description: The `seq` of the refused input, when it had one.
+            type: integer
+          code:
+            type: string
+            description: |
+              * `wrong_level`: a control frame on an `intent` seat, or an intent on a `direct` seat.
+              * `not_installed`: the build does not have this technique.
+              * `not_available`: the maneuver makes no sense right now (for example `drag_to_pit` with nothing held).
+              * `unknown_target`: no living opponent has that name.
+              * `out_of_range`: a number outside its range, or `forTick` beyond `maxLeadTicks`.
+              * `wrong_tick`: a commit for a tick that is not the current one.
+              * `not_fighting`: input before the bell or after the end.
+            enum: [wrong_level, not_installed, not_available, unknown_target, out_of_range, wrong_tick, not_fighting]
+          message: { type: string }
+      examples:
+        - payload: { type: rejected, seq: 19, code: not_available, message: "drag_to_pit: nothing is held" }
+    Pong:
+      name: pong
+      title: Pong
+      payload:
+        type: object
+        required: [type, t, serverTime]
+        properties:
+          type: { type: string, const: pong }
+          t: { type: number, description: The `t` of the ping. }
+          serverTime: { $ref: "./openapi.yaml#/components/schemas/Millis" }
+          tick:
+            description: The match's current tick. Absent on the feed socket.
+            $ref: "./openapi.yaml#/components/schemas/Tick"
+    Result:
+      name: result
+      title: Result
+      summary: The match is over. The socket closes with 1000 after this message.
+      payload:
+        type: object
+        required: [type, matchId, result]
+        properties:
+          type: { type: string, const: result }
+          matchId: { $ref: "./openapi.yaml#/components/schemas/MatchIdValue" }
+          result: { $ref: "./openapi.yaml#/components/schemas/MatchResult" }
+          timing:
+            description: On a seat socket, this seat's timing report.
+            $ref: "./openapi.yaml#/components/schemas/SeatTiming"
+    ErrorMessage:
+      name: error
+      title: Error
+      summary: Something is wrong with the connection. If `fatal`, the socket closes next.
+      payload:
+        type: object
+        required: [type, code, message, fatal]
+        properties:
+          type: { type: string, const: error }
+          code: { type: string }
+          message: { type: string }
+          fatal: { type: boolean }
+
+    # ---- server to client: feed ---------------------------------------------------------------------
+    Subscribed:
+      name: subscribed
+      title: Subscribed
+      payload:
+        type: object
+        required: [type, topics]
+        properties:
+          type: { type: string, const: subscribed }
+          topics:
+            type: object
+            description: The current `seq` of each topic now subscribed.
+            additionalProperties: { type: integer }
+    Resync:
+      name: resync
+      title: Resync
+      summary: Events were missed and cannot be replayed. Re-read state over HTTP.
+      payload:
+        type: object
+        required: [type, topic]
+        properties:
+          type: { type: string, const: resync }
+          topic: { type: string }
+    SeasonStarted:
+      name: season.started
+      title: Season started
+      summary: Topic `season`. A new season's league is frozen.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/FeedHeader"
+          - type: object
+            required: [seasonId, entrants]
+            properties:
+              seasonId: { $ref: "./openapi.yaml#/components/schemas/SeasonIdValue" }
+              entrants:
+                type: array
+                items: { $ref: "./openapi.yaml#/components/schemas/EntrantSummary" }
+    SeasonPricing:
+      name: season.pricing
+      title: Pricing progress
+      summary: Topic `season`. A pricing run is under way; markets for the next round open when it reaches 1.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/FeedHeader"
+          - type: object
+            required: [seasonId, progress]
+            properties:
+              seasonId: { $ref: "./openapi.yaml#/components/schemas/SeasonIdValue" }
+              progress: { type: number, minimum: 0, maximum: 1 }
+    SeasonClockChanged:
+      name: season.clock
+      title: Match clock
+      summary: Topic `season`. When the next match will be played.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/FeedHeader"
+          - type: object
+            required: [nextMatchAt]
+            properties:
+              nextMatchAt:
+                oneOf: [{ $ref: "./openapi.yaml#/components/schemas/Millis" }, { type: "null" }]
+    FixtureLocked:
+      name: fixture.locked
+      title: Fixture locked
+      summary: Topic `season`. Betting on a fixture has closed and its seed is revealed.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/FeedHeader"
+          - type: object
+            required: [seasonId, fixtureId, fairness]
+            properties:
+              seasonId: { $ref: "./openapi.yaml#/components/schemas/SeasonIdValue" }
+              fixtureId: { $ref: "./openapi.yaml#/components/schemas/FixtureId" }
+              fairness: { $ref: "./openapi.yaml#/components/schemas/FairRecord" }
+    FixturePlayed:
+      name: fixture.played
+      title: Fixture played
+      summary: Topic `season`. A match has a result; its markets settle in the same step.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/FeedHeader"
+          - type: object
+            required: [seasonId, fixtureId, matchId, record, prizes]
+            properties:
+              seasonId: { $ref: "./openapi.yaml#/components/schemas/SeasonIdValue" }
+              fixtureId: { $ref: "./openapi.yaml#/components/schemas/FixtureId" }
+              matchId: { $ref: "./openapi.yaml#/components/schemas/MatchIdValue" }
+              record: { $ref: "./openapi.yaml#/components/schemas/MatchRecord" }
+              prizes:
+                type: array
+                items:
+                  type: object
+                  required: [handle, bot, amount]
+                  properties:
+                    handle: { type: string }
+                    bot: { type: string }
+                    amount: { type: integer }
+    SeasonCompleted:
+      name: season.completed
+      title: Season completed
+      summary: Topic `season`. The Grand Final is over.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/FeedHeader"
+          - type: object
+            required: [seasonId, champion]
+            properties:
+              seasonId: { $ref: "./openapi.yaml#/components/schemas/SeasonIdValue" }
+              champion: { $ref: "./openapi.yaml#/components/schemas/BotId" }
+    MarketOpened:
+      name: market.opened
+      title: Market opened
+      summary: Topic `markets`. A new market, with its first prices.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/FeedHeader"
+          - type: object
+            required: [market]
+            properties:
+              market: { $ref: "./openapi.yaml#/components/schemas/Market" }
+    MarketPrice:
+      name: market.price
+      title: Prices moved
+      summary: Topic `markets`. A reprice, or exposure shading after a bet. Prices here are not personalised.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/FeedHeader"
+          - type: object
+            required: [marketId, version, selections]
+            properties:
+              marketId: { $ref: "./openapi.yaml#/components/schemas/MarketId" }
+              version: { type: integer }
+              selections:
+                type: array
+                items:
+                  type: object
+                  required: [id, price]
+                  properties:
+                    id: { type: string }
+                    price: { $ref: "./openapi.yaml#/components/schemas/CentiOdds" }
+      examples:
+        - payload:
+            type: market.price
+            seq: 5121
+            t: 1794596553820
+            marketId: "s12/w1a/win"
+            version: 3
+            selections: [{ id: "RIPSAW", price: 295 }, { id: "PILEDRIVER", price: 410 }, { id: "CLAMP", price: 365 }, { id: "LAUNCHER", price: 520 }]
+    MarketStatusChanged:
+      name: market.status
+      title: Market status
+      summary: Topic `markets`. Open, suspended or closed.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/FeedHeader"
+          - type: object
+            required: [marketId, status]
+            properties:
+              marketId: { $ref: "./openapi.yaml#/components/schemas/MarketId" }
+              status: { $ref: "./openapi.yaml#/components/schemas/MarketStatus" }
+    MarketSettled:
+      name: market.settled
+      title: Market settled
+      summary: Topic `markets`. Settled with grades, or voided.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/FeedHeader"
+          - type: object
+            required: [marketId, status, grades]
+            properties:
+              marketId: { $ref: "./openapi.yaml#/components/schemas/MarketId" }
+              status: { type: string, enum: [settled, void] }
+              grades:
+                oneOf:
+                  - type: object
+                    additionalProperties: { $ref: "./openapi.yaml#/components/schemas/Grade" }
+                  - type: "null"
+    MatchListed:
+      name: match.phase
+      title: Public match
+      summary: Topic `matches`. A public exhibition was created, started or ended.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/FeedHeader"
+          - type: object
+            required: [match]
+            properties:
+              match: { $ref: "./openapi.yaml#/components/schemas/Match" }
+    BetPlaced:
+      name: bet.placed
+      title: Bet placed
+      summary: Topic `account`. One of the caller's bets was struck (from any client).
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/FeedHeader"
+          - type: object
+            required: [bet]
+            properties:
+              bet: { $ref: "./openapi.yaml#/components/schemas/Bet" }
+    BetSettled:
+      name: bet.settled
+      title: Bet settled
+      summary: Topic `account`. One of the caller's bets was paid, lost or voided.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/FeedHeader"
+          - type: object
+            required: [bet, balance]
+            properties:
+              bet: { $ref: "./openapi.yaml#/components/schemas/Bet" }
+              balance: { $ref: "./openapi.yaml#/components/schemas/Credits" }
+    WalletChanged:
+      name: wallet.changed
+      title: Wallet changed
+      summary: Topic `account`. Any movement on the caller's wallet, prizes and stipends included.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/FeedHeader"
+          - type: object
+            required: [balance, row]
+            properties:
+              balance: { $ref: "./openapi.yaml#/components/schemas/Credits" }
+              row: { $ref: "./openapi.yaml#/components/schemas/WalletRow" }
+
+  schemas:
+    FeedHeader:
+      type: object
+      description: Fields every feed event carries.
+      required: [type, seq, t]
+      properties:
+        type: { type: string, description: The event name. }
+        seq: { type: integer, description: Rises by one per event within its topic. }
+        t: { $ref: "./openapi.yaml#/components/schemas/Millis" }
