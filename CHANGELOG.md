@@ -3,6 +3,14 @@
 The version shows in the arena's top bar (click it for this list). Bump `version` in package.json for each
 release and add a section here; the page shows the newest section.
 
+## 0.3.2 — 2026-11-13
+
+- **New keyboard layout, like a PC action game.** W A S D, the arrows, Space, Shift, Q, E, R, F and C are kept
+  free for driving a bot yourself. Pause is now `P` (or `Esc` when nothing is open), the season hub is `Tab`,
+  the camera `V`, fullscreen `F11` or `Alt+Enter`, debug lines the backquote key (or `F3`), speed `−` and `=`,
+  users `U`, and the all-brains switches `8` `9` `0`. `N`, `G`, `L`, `/` and `M` are unchanged.
+- **Press H, ? or the Keys button on the control bar** for the full key list. Hover any control-bar button for its key.
+
 ## 0.3.1 — 2026-11-12
 
 - **The house server takes your bots.** A registered user can enter one Garage build (`PUT /api/bet/bot`). It

@@ -25,18 +25,20 @@ import { BettingDesk } from "./betting/desk";
 import { BettingPanel } from "./betting/deskUi";
 import { pitPhase, sawRaise } from "./sim/arena";
 import { toggleFullscreen } from "./ui/fullscreen";
+import { actionFor, isKey, keyHint, swallowPilotKey } from "./ui/keymap";
 import type { HammerPhase } from "./sim/bot";
 import type { BotKind, Maneuver } from "@shared/types";
 
 /**
  * S1 Arena entry point. Fixed-step simulation, async brains, Three.js rendering, HTML HUD, and the Garage
- * (designer) overlay. Keyboard: Space pause · N new match · C camera · D debug · M mute · 1/2/3 speed ·
- * J/T/B all Jev/trained/baseline · G garage · S season · P users · F fullscreen.
+ * (designer) overlay. Keyboard: see ui/keymap.ts (PC game layout; WASD, Space, Shift, Q/E/R/F/C and the arrows are
+ * kept free for piloting).
  */
 
 const FIXED_DT = 1 / 60;
 const DECISION_CADENCE = 0.45; // seconds between brain decisions per bot
 const AUTO_NEXT_SECONDS = 9;
+const SPEEDS = [0.5, 1, 2];
 
 const canvas = document.getElementById("arena") as HTMLCanvasElement;
 const scene = new ArenaScene(canvas);
@@ -108,7 +110,7 @@ const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
 function freeCamHint() {
   if (scene.autoCamera) return;
   const mod = IS_MAC ? "⌥/⌘/⇧" : "Alt/Ctrl/Shift";
-  toast(`Free cam · drag to orbit · ${mod}-drag or right-drag to pan · scroll to zoom · C for auto`);
+  toast(`Free cam · drag to orbit · ${mod}-drag or right-drag to pan · scroll to zoom · ${keyHint("camera")} for auto`);
 }
 
 const designer = new Designer(document.getElementById("designer")!, roster, {
@@ -600,89 +602,92 @@ async function pollJev() {
 window.addEventListener("keydown", (ev) => {
   const t = ev.target;
   if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
+  // A full-screen overlay takes the keyboard; Esc or its own key closes it. Tab only closes the season hub from
+  // the page itself, so Tab still walks the hub's buttons once one has focus.
+  const onPage = !(t instanceof HTMLElement) || t === document.body;
   if (designer.open) {
-    if (ev.key === "Escape" || ev.key === "g" || ev.key === "G") designer.hide();
+    if (ev.key === "Escape" || isKey(ev, "garage")) designer.hide();
     return;
   }
   if (account.open) {
-    if (ev.key === "Escape" || ev.key === "p" || ev.key === "P") account.hide();
+    if (ev.key === "Escape" || isKey(ev, "users")) account.hide();
     return;
   }
   if (season.open) {
-    if (ev.key === "Escape" || ev.key === "s" || ev.key === "S") season.hide();
+    if (ev.key === "Escape" || (isKey(ev, "season") && onPage)) {
+      ev.preventDefault();
+      season.hide();
+    }
     return;
   }
-  switch (ev.key) {
-    case "l":
-    case "L":
-      hud.log.toggle();
-      return;
-    case "/":
-      ev.preventDefault();
-      hud.log.focusSearch();
-      return;
-    case "Escape":
-      hud.log.setOpen(false);
-      return;
-    case "g":
-    case "G":
-      designer.show();
-      break;
-    case "s":
-    case "S":
-      season.show();
-      break;
-    case "p":
-    case "P":
-      account.show();
-      break;
-    case " ":
-      ev.preventDefault();
+  if (ev.key === "Escape") {
+    // Close the topmost small panel; with nothing open, Esc pauses like a game's pause key.
+    if (hud.closePanel()) return;
+    if (hud.log.open) hud.log.setOpen(false);
+    else paused = !paused;
+    syncControls();
+    return;
+  }
+  if (swallowPilotKey(ev)) {
+    ev.preventDefault(); // reserved for piloting: never scroll the page or press a focused button
+    return;
+  }
+  const action = actionFor(ev);
+  if (!action) return;
+  ev.preventDefault();
+  switch (action) {
+    case "pause":
       paused = !paused;
       break;
-    case "n":
-    case "N":
+    case "newMatch":
       startMatch();
       break;
-    case "c":
-    case "C":
+    case "slower":
+    case "faster": {
+      const i = SPEEDS.indexOf(speed) + (action === "faster" ? 1 : -1);
+      speed = SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, i))];
+      break;
+    }
+    case "camera":
       scene.autoCamera = !scene.autoCamera;
       freeCamHint();
       break;
-    case "f":
-    case "F":
-      if (ev.metaKey || ev.ctrlKey || ev.altKey) return; // leave browser shortcuts (⌘F find) alone
-      toggleFullscreen();
-      break;
-    case "d":
-    case "D":
+    case "debug":
       debug = !debug;
       if (debugLines) debugLines.visible = debug;
       break;
-    case "1":
-      speed = 0.5;
+    case "mute":
+      sound.setMuted(!sound.muted);
       break;
-    case "2":
-      speed = 1;
+    case "fullscreen":
+      toggleFullscreen();
       break;
-    case "3":
-      speed = 2;
+    case "help":
+      hud.toggleKeys();
       break;
-    case "j":
-    case "J":
+    case "season":
+      season.show();
+      break;
+    case "garage":
+      designer.show();
+      break;
+    case "users":
+      account.show();
+      break;
+    case "log":
+      hud.log.toggle();
+      return;
+    case "logSearch":
+      hud.log.focusSearch();
+      return;
+    case "allJev":
       setAllBrains("jev");
       break;
-    case "t":
-    case "T":
+    case "allTrained":
       setAllBrains("trained");
       break;
-    case "b":
-    case "B":
+    case "allBaseline":
       setAllBrains("baseline");
-      break;
-    case "m":
-    case "M":
-      sound.setMuted(!sound.muted);
       break;
   }
   syncControls();

@@ -277,9 +277,28 @@ public/models/trained-brain.json   the shipped trained-brain weights (league mod
 
 ## Controls
 
-Space pause · N new match · G garage · S season · P users · L event log · / search the log · Esc close it ·
-C auto/free camera · F (or ⛶) fullscreen · D debug nav lines · M mute · 1/2/3 speed · J all Jev · T all trained ·
-B all baseline. In free camera: drag to orbit, Option/⌘/Shift-drag (Alt/Ctrl/Shift elsewhere) or right-drag to pan
+Laid out like a PC action game; H (or ? Keys on the control bar) shows the list in the arena. The table is
+`src/ui/keymap.ts`.
+
+| Key | Does |
+|---|---|
+| P, or Esc with nothing open | pause / resume |
+| Esc | close the open screen, panel or event log first |
+| N | new match |
+| − / = | slower / faster (½× · 1× · 2×) |
+| V | auto / free camera |
+| F11, Alt+Enter (or ⛶) | fullscreen |
+| M | mute |
+| ` or F3 | debug nav lines |
+| Tab | season hub and standings |
+| G | Garage |
+| U | users and wallets |
+| L, / | event log, search the log |
+| 8 / 9 / 0 | every bot on Jev / trained / baseline |
+| H or ? | key list |
+
+W A S D, the arrows, Space, Shift, Q, E, R, F and C are kept free for piloting a bot (see the pilot-mode plan);
+Space and the arrows do nothing yet. In free camera: drag to orbit, Option/⌘/Shift-drag (Alt/Ctrl/Shift elsewhere) or right-drag to pan
 across the floor, scroll to zoom.
 Click a bot card's brain badge to cycle that bot Jev → Trained → Baseline.
 
